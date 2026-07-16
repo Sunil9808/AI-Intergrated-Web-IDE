@@ -7,7 +7,6 @@ import BottomPanel from '../components/BottomPanel/BottomPanel';
 import StatusBar from '../components/StatusBar/StatusBar';
 import CommandPalette from '../components/Editor/CommandPalette';
 import AIChatPanel from '../components/Sidebar/AIChat/AIChatPanel';
-import CopyrightSafetyDialog from '../components/Common/CopyrightSafetyDialog';
 import { Sparkles } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
 import { useFileStore } from '../store/fileStore';
@@ -35,7 +34,6 @@ export default function WorkspaceLayout() {
   const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
   const [isDraggingBottom, setIsDraggingBottom] = useState(false);
   const [isDraggingRight, setIsDraggingRight] = useState(false);
-  const [copyrightDialogOpen, setCopyrightDialogOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Initialize the IDE shell without opening a project.
@@ -68,11 +66,6 @@ export default function WorkspaceLayout() {
     };
   }, []);
 
-  useEffect(() => {
-    const openCopyrightDialog = () => setCopyrightDialogOpen(true);
-    window.addEventListener('ai-web-ide:open-copyright-safety', openCopyrightDialog);
-    return () => window.removeEventListener('ai-web-ide:open-copyright-safety', openCopyrightDialog);
-  }, []);
 
   // Sidebar resize
   const handleSidebarMouseDown = (e: React.MouseEvent) => {
@@ -237,9 +230,6 @@ export default function WorkspaceLayout() {
       {/* Command Palette Overlay */}
       {commandPaletteOpen && <CommandPalette />}
 
-      {copyrightDialogOpen && (
-        <CopyrightSafetyDialog onClose={() => setCopyrightDialogOpen(false)} />
-      )}
     </div>
   );
 }

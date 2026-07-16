@@ -25,13 +25,13 @@ import {
   Files,
   Search,
   Edit3,
-  ShieldCheck,
   ListChecks,
   Clock,
   Settings,
   Key,
   PackageCheck,
 } from 'lucide-react';
+
 import { useAIStore } from '../../../store/aiStore';
 import { useEditorStore } from '../../../store/editorStore';
 import { useExtensionStore } from '../../../store/extensionStore';
@@ -887,20 +887,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
 
       {/* Input */}
       <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.18)' }}>
-        <div
-          className="mb-2 flex items-start gap-2 rounded-md px-2.5 py-2 text-[11px] leading-4"
-          style={{
-            background: 'rgba(71,214,182,0.08)',
-            border: '1px solid rgba(71,214,182,0.18)',
-            color: 'var(--color-textMuted)',
-          }}
-        >
-          <ShieldCheck size={14} className="mt-0.5 flex-shrink-0" style={{ color: '#47d6b6' }} />
-          <div className="min-w-0">
-            <div className="font-semibold" style={{ color: '#b7f7ea' }}>Copyright-safe AI</div>
-            <div>Do not paste protected articles, books, lyrics, or private content. Ask for summaries, analysis, or original drafts instead.</div>
-          </div>
-        </div>
+
         {selectedAction && (
           <div className="flex items-center gap-1.5 mb-2 text-xxs" style={{ color: 'var(--color-textMuted)' }}>
             <span className="px-1.5 py-0.5 rounded" style={{ background: '#22a6f220', color: '#7dd3fc' }}>

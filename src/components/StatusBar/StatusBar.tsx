@@ -1,4 +1,4 @@
-import { AlertTriangle, Bell, Bot, Puzzle, Radio, Rocket, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, Bell, Bot, Puzzle, Radio, Rocket, XCircle } from 'lucide-react';
 import { useUIStore } from '../../store/uiStore';
 import { useExtensionStore } from '../../store/extensionStore';
 import { useEditorStore } from '../../store/editorStore';
@@ -33,9 +33,6 @@ export default function StatusBar() {
     setSidebarVisible(true);
   };
 
-  const openCopyrightSafety = () => {
-    window.dispatchEvent(new CustomEvent('ai-web-ide:open-copyright-safety'));
-  };
 
   return (
     <div
@@ -89,10 +86,6 @@ export default function StatusBar() {
           <span>AI</span>
         </StatusItem>
 
-        <StatusItem title="Copyright safety" onClick={openCopyrightSafety}>
-          <ShieldCheck size={12} />
-          <span>Content Safety</span>
-        </StatusItem>
 
         <StatusItem title="Open Ports" onClick={() => showPanel('ports')}>
           <Radio size={12} />
