@@ -1,49 +1,106 @@
-import { AlertTriangle, Bell, Bot, Radio, Rocket, XCircle } from 'lucide-react';
+import { AlertTriangle, Bell, Bot, Puzzle, Radio, Rocket, ShieldCheck, XCircle } from 'lucide-react';
 import { useUIStore } from '../../store/uiStore';
 import { useExtensionStore } from '../../store/extensionStore';
+import { useEditorStore } from '../../store/editorStore';
+import { getActiveExtensionIds } from '../../services/extensionRuntime';
 
 export default function StatusBar() {
-  const { toggleBottomPanel } = useUIStore();
+  const {
+    setActiveBottomPanel,
+    setBottomPanelVisible,
+    setRightPanelVisible,
+    setActiveSidebarPanel,
+    setSidebarVisible,
+    addNotification,
+  } = useUIStore();
   const installedExtensions = useExtensionStore((state) => state.installed);
+  const activeTabLanguage = useEditorStore((state) => state.getActiveTab()?.language ?? '');
+  const activeExtCount = getActiveExtensionIds().size;
+
+  const showPanel = (panel: 'terminal' | 'output' | 'problems' | 'debug' | 'ports') => {
+    setActiveBottomPanel(panel);
+    setBottomPanelVisible(true);
+  };
+
+  const runDevServer = async () => {
+    showPanel('terminal');
+    window.dispatchEvent(new CustomEvent('ai-web-ide:terminal-command', { detail: { command: 'npm run dev' } }));
+    addNotification({ type: 'success', message: 'Started project task in Terminal' });
+  };
+
+  const openExtensions = () => {
+    setActiveSidebarPanel('extensions');
+    setSidebarVisible(true);
+  };
+
+  const openCopyrightSafety = () => {
+    window.dispatchEvent(new CustomEvent('ai-web-ide:open-copyright-safety'));
+  };
 
   return (
     <div
-      className="flex h-[32px] flex-shrink-0 items-center justify-between border-t px-3 text-[16px] no-select"
+      className="flex h-[26px] flex-shrink-0 items-center justify-between border-t px-2 no-select"
       style={{
         background: 'var(--color-statusBar)',
         borderColor: 'var(--color-border)',
-        color: '#a9a9a9',
+        color: '#9a9a9a',
+        fontSize: 12,
+        fontFamily: "'Inter', system-ui, sans-serif",
       }}
     >
-      <div className="flex h-full items-center gap-3">
-        <StatusItem title="Remote window">
-          <span className="text-[24px] leading-none">&gt;&lt;</span>
+      {/* Left section */}
+      <div className="flex h-full items-center gap-1">
+        <StatusItem title="Open Explorer" onClick={() => { setActiveSidebarPanel('explorer'); setSidebarVisible(true); }}>
+          <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.5px', color: 'var(--color-accent)' }}>&gt;&lt;</span>
         </StatusItem>
-        <StatusItem>
-          <Rocket size={24} />
-          <AlertTriangle size={22} />
+        <StatusItem title="Run project" onClick={() => void runDevServer()}>
+          <Rocket size={13} />
+          <span>Run</span>
         </StatusItem>
-        <StatusItem onClick={toggleBottomPanel}>
-          <XCircle size={21} />
+        <StatusItem title="Problems" onClick={() => showPanel('problems')}>
+          <XCircle size={12} />
           <span>0</span>
-          <AlertTriangle size={21} />
+          <AlertTriangle size={12} />
           <span>0</span>
         </StatusItem>
       </div>
 
-      <div className="flex h-full items-center gap-5">
-        <StatusItem>
-          <Bot size={23} />
+      {/* Right section */}
+      <div className="flex h-full items-center gap-1">
+        {/* Language indicator */}
+        {activeTabLanguage && (
+          <StatusItem title="Language mode" onClick={() => addNotification({ type: 'info', message: `Active language: ${activeTabLanguage}` })}>
+            <span style={{ textTransform: 'capitalize' }}>{activeTabLanguage}</span>
+          </StatusItem>
+        )}
+
+        {/* Extensions indicator */}
+        <StatusItem title="Manage extensions" onClick={openExtensions}>
+          <Puzzle size={12} />
+          <span>
+            {installedExtensions.length > 0
+              ? `${activeExtCount} active`
+              : 'Extensions'}
+          </span>
         </StatusItem>
-        <StatusItem title="Active Extensions">
-          <span>Extensions: {installedExtensions.length}</span>
+
+        <StatusItem title="Open AI Pair Programmer" onClick={() => setRightPanelVisible(true)}>
+          <Bot size={13} />
+          <span>AI</span>
         </StatusItem>
-        <StatusItem>
-          <Radio size={21} />
+
+        <StatusItem title="Copyright safety" onClick={openCopyrightSafety}>
+          <ShieldCheck size={12} />
+          <span>Content Safety</span>
+        </StatusItem>
+
+        <StatusItem title="Open Ports" onClick={() => showPanel('ports')}>
+          <Radio size={12} />
           <span>Go Live</span>
         </StatusItem>
-        <StatusItem>
-          <Bell size={22} />
+
+        <StatusItem title="Notifications" onClick={() => addNotification({ type: 'info', message: 'No new notifications' })}>
+          <Bell size={12} />
         </StatusItem>
       </div>
     </div>
@@ -60,7 +117,12 @@ function StatusItem({
   title?: string;
 }) {
   return (
-    <button title={title} onClick={onClick} className="flex h-full items-center gap-1 rounded px-1 hover:bg-white/10">
+    <button
+      title={title}
+      onClick={onClick}
+      className="flex h-full items-center gap-1 rounded px-2 hover:bg-white/10 transition-colors"
+      style={{ fontSize: 12, fontFamily: "'Inter', system-ui, sans-serif" }}
+    >
       {children}
     </button>
   );

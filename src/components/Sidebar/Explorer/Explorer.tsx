@@ -8,6 +8,7 @@ import { FileNode } from '../../../types/file.types';
 import { getLanguageFromExtension } from '../../../utils/fileHelpers';
 import { fileService } from '../../../services/fileService';
 import { browserFileCache } from '../../../services/browserFileCache';
+import FileTypeIcon from '../../Icons/FileTypeIcon';
 
 export default function Explorer() {
   const { fileTree, expandedFolders, toggleFolder, collapseFolder, selectedFileId, selectFile, addFile } = useFileStore();
@@ -144,14 +145,14 @@ export default function Explorer() {
 
       {contextMenu && (
         <div
-          className="fixed z-50 rounded py-1 text-xs shadow-xl"
+          className="fixed z-50 rounded-lg py-1 text-xs shadow-xl"
           style={{
             left: contextMenu.x,
             top: contextMenu.y,
-            background: '#252526',
-            border: '1px solid var(--color-border)',
+            background: '#150f2a',
+            border: '1px solid rgba(167,139,250,0.2)',
             minWidth: 180,
-            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+            boxShadow: '0 8px 28px rgba(0,0,0,0.6)',
           }}
         >
           {[
@@ -390,8 +391,8 @@ function NoFolderOpened() {
 function ExplorerActionButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
-      className="my-4 h-[30px] w-full rounded text-[13px] font-medium leading-none transition-colors hover:brightness-110"
-      style={{ background: '#2f86ad', color: '#ffffff' }}
+      className="my-4 h-[30px] w-full rounded-lg text-[13px] font-medium leading-none transition-all hover:brightness-110 hover:shadow-lg"
+      style={{ background: 'rgba(167,139,250,0.2)', color: 'var(--color-accent)', border: '1px solid rgba(167,139,250,0.3)' }}
       onClick={onClick}
     >
       {children}
@@ -401,7 +402,7 @@ function ExplorerActionButton({ children, onClick }: { children: React.ReactNode
 
 function TextLink({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
-    <button className="inline text-left align-baseline" style={{ color: '#35b5ee' }} onClick={onClick}>
+    <button className="inline text-left align-baseline" style={{ color: 'var(--color-accent)' }} onClick={onClick}>
       {children}
     </button>
   );
@@ -438,7 +439,7 @@ function FileTreeNode({ node, depth, expandedFolders, selectedFileId, onFileClic
         ) : (
           <span className="w-4" />
         )}
-        <FileTypeIcon filename={node.name} isDirectory={node.type === 'directory'} isOpen={isExpanded} />
+        <FileTypeIcon filename={node.name} isDirectory={node.type === 'directory'} isOpen={isExpanded} size={16} />
         <span
           className={`ml-0.5 truncate text-[13px] leading-none ${isSelected ? 'font-semibold' : 'font-normal'}`}
           style={{ color: isSelected ? '#fff' : 'var(--color-text)' }}
@@ -460,121 +461,6 @@ function FileTreeNode({ node, depth, expandedFolders, selectedFileId, onFileClic
       ))}
     </>
   );
-}
-
-function FileTypeIcon({ filename, isDirectory, isOpen }: { filename: string; isDirectory: boolean; isOpen: boolean }) {
-  const icon = getExplorerIcon(filename, isDirectory, isOpen);
-
-  return (
-    <span
-      className="flex h-[16px] w-[18px] flex-shrink-0 items-center justify-center rounded-[3px] text-[8px] font-bold leading-none"
-      style={{
-        background: icon.background,
-        color: icon.color,
-        border: icon.border ? `1px solid ${icon.border}` : 'none',
-        fontFamily: 'Segoe UI, system-ui, sans-serif',
-      }}
-      title={icon.title}
-    >
-      {icon.label}
-    </span>
-  );
-}
-
-function getExplorerIcon(filename: string, isDirectory: boolean, isOpen: boolean) {
-  if (isDirectory) {
-    return {
-      label: isOpen ? '-' : '+',
-      background: '#dcb67a',
-      color: '#2a1d08',
-      title: isOpen ? 'Open folder' : 'Folder',
-    };
-  }
-
-  const lower = filename.toLowerCase();
-  const ext = lower.split('.').pop() || '';
-  const namedIcons: Record<string, ExplorerIcon> = {
-    '.env': icon('ENV', '#ecd884', '#2d2605', 'Environment file'),
-    '.gitignore': icon('GIT', '#f14c4c', '#ffffff', 'Git ignore'),
-    '.gitattributes': icon('GIT', '#f14c4c', '#ffffff', 'Git attributes'),
-    '.gitmodules': icon('GIT', '#f14c4c', '#ffffff', 'Git modules'),
-    dockerfile: icon('DKR', '#2496ed', '#ffffff', 'Dockerfile'),
-    makefile: icon('MK', '#6a9955', '#ffffff', 'Makefile'),
-    'package.json': icon('NPM', '#cb3837', '#ffffff', 'npm package'),
-    'package-lock.json': icon('LCK', '#cb3837', '#ffffff', 'npm lockfile'),
-    'yarn.lock': icon('YRN', '#2c8ebb', '#ffffff', 'Yarn lockfile'),
-    'pnpm-lock.yaml': icon('PN', '#f9ad00', '#1b1b1b', 'pnpm lockfile'),
-    'tsconfig.json': icon('TS', '#3178c6', '#ffffff', 'TypeScript config'),
-    'vite.config.ts': icon('V', '#9468ff', '#ffffff', 'Vite config'),
-    'vite.config.js': icon('V', '#9468ff', '#ffffff', 'Vite config'),
-    'tailwind.config.js': icon('TW', '#38bdf8', '#06212b', 'Tailwind config'),
-    'tailwind.config.ts': icon('TW', '#38bdf8', '#06212b', 'Tailwind config'),
-    'readme.md': icon('MD', '#519aba', '#ffffff', 'Markdown'),
-  };
-
-  const extensionIcons: Record<string, ExplorerIcon> = {
-    ts: icon('TS', '#3178c6', '#ffffff', 'TypeScript'),
-    tsx: icon('TSX', '#3178c6', '#ffffff', 'TypeScript React'),
-    js: icon('JS', '#f7df1e', '#1f1f1f', 'JavaScript'),
-    jsx: icon('JSX', '#f7df1e', '#1f1f1f', 'JavaScript React'),
-    mjs: icon('JS', '#f7df1e', '#1f1f1f', 'JavaScript module'),
-    cjs: icon('JS', '#f7df1e', '#1f1f1f', 'CommonJS'),
-    py: icon('PY', '#3776ab', '#ffffff', 'Python'),
-    java: icon('J', '#e76f00', '#ffffff', 'Java'),
-    c: icon('C', '#5c6bc0', '#ffffff', 'C'),
-    h: icon('H', '#5c6bc0', '#ffffff', 'C header'),
-    cpp: icon('C++', '#00599c', '#ffffff', 'C++'),
-    cc: icon('C++', '#00599c', '#ffffff', 'C++'),
-    cxx: icon('C++', '#00599c', '#ffffff', 'C++'),
-    hpp: icon('H++', '#00599c', '#ffffff', 'C++ header'),
-    cs: icon('C#', '#68217a', '#ffffff', 'C#'),
-    go: icon('GO', '#00add8', '#04262e', 'Go'),
-    rs: icon('RS', '#dea584', '#2b1606', 'Rust'),
-    php: icon('PHP', '#777bb4', '#ffffff', 'PHP'),
-    rb: icon('RB', '#cc342d', '#ffffff', 'Ruby'),
-    swift: icon('SW', '#f05138', '#ffffff', 'Swift'),
-    kt: icon('KT', '#a97bff', '#ffffff', 'Kotlin'),
-    html: icon('H5', '#e34f26', '#ffffff', 'HTML'),
-    css: icon('CSS', '#1572b6', '#ffffff', 'CSS'),
-    scss: icon('SCSS', '#cf649a', '#ffffff', 'SCSS'),
-    less: icon('LESS', '#1d365d', '#ffffff', 'Less'),
-    json: icon('{}', '#f0db4f', '#1f1f1f', 'JSON'),
-    yaml: icon('YML', '#cb171e', '#ffffff', 'YAML'),
-    yml: icon('YML', '#cb171e', '#ffffff', 'YAML'),
-    xml: icon('<>', '#e37933', '#ffffff', 'XML'),
-    md: icon('MD', '#519aba', '#ffffff', 'Markdown'),
-    sh: icon('SH', '#89e051', '#10220c', 'Shell script'),
-    bash: icon('SH', '#89e051', '#10220c', 'Bash script'),
-    ps1: icon('PS', '#5391fe', '#ffffff', 'PowerShell'),
-    sql: icon('DB', '#f29111', '#ffffff', 'SQL'),
-    toml: icon('TOML', '#9c4221', '#ffffff', 'TOML'),
-    ini: icon('INI', '#6a9955', '#ffffff', 'INI'),
-    txt: icon('TXT', '#9cdcfe', '#10212b', 'Text'),
-    svg: icon('SVG', '#ffb13b', '#261704', 'SVG image'),
-    png: icon('IMG', '#c586c0', '#ffffff', 'PNG image'),
-    jpg: icon('IMG', '#c586c0', '#ffffff', 'JPEG image'),
-    jpeg: icon('IMG', '#c586c0', '#ffffff', 'JPEG image'),
-    gif: icon('GIF', '#c586c0', '#ffffff', 'GIF image'),
-    webp: icon('IMG', '#c586c0', '#ffffff', 'WebP image'),
-    pdf: icon('PDF', '#f14c4c', '#ffffff', 'PDF'),
-    zip: icon('ZIP', '#d7ba7d', '#211804', 'Archive'),
-    tar: icon('TAR', '#d7ba7d', '#211804', 'Archive'),
-    gz: icon('GZ', '#d7ba7d', '#211804', 'Archive'),
-  };
-
-  return namedIcons[lower] || extensionIcons[ext] || icon('FILE', '#4f5666', '#f2f2f2', 'File', '#6f7788');
-}
-
-interface ExplorerIcon {
-  label: string;
-  background: string;
-  color: string;
-  title: string;
-  border?: string;
-}
-
-function icon(label: string, background: string, color: string, title: string, border?: string): ExplorerIcon {
-  return { label, background, color, title, border };
 }
 
 function IconBtn({ icon, title, onClick }: { icon: React.ReactNode; title: string; onClick?: () => void }) {

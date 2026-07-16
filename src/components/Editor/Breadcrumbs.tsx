@@ -1,6 +1,6 @@
 import { ChevronRight } from 'lucide-react';
 import { useEditorStore } from '../../store/editorStore';
-import { getFileIcon } from '../../utils/fileHelpers';
+import FileTypeIcon from '../Icons/FileTypeIcon';
 
 export default function Breadcrumbs() {
   const { getActiveTab } = useEditorStore();
@@ -26,10 +26,10 @@ export default function Breadcrumbs() {
           <div key={i} className="flex items-center gap-1 flex-shrink-0">
             {i > 0 && <ChevronRight size={10} className="opacity-40" />}
             <span
-              className={`hover:text-white cursor-pointer transition-colors ${isLast ? 'text-white' : ''}`}
+              className={`inline-flex items-center gap-1 hover:text-white cursor-pointer transition-colors ${isLast ? 'text-white' : ''}`}
             >
               {isLast && (
-                <span className="mr-1">{getFileIcon(part)}</span>
+                <FileTypeIcon filename={part} size={14} className="inline-block" />
               )}
               {part}
             </span>

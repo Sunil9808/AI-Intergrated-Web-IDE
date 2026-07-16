@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { streamChatResponse, getChatCompletion, AIContext } from '../services/ai/aiService';
-import { runPairProgrammerAgent } from '../services/ai/agentService';
+import { streamChatResponse, getChatCompletion, getInlineCompletion, AIContext } from '../services/ai/aiService';
+import { runPairProgrammerAgent, autoDetectAndRecommendExtensions } from '../services/ai/agentService';
 
 export const aiController = {
   async chat(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -142,6 +142,22 @@ export const aiController = {
     }
   },
 
+  async complete(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { prefix = '', suffix = '', language = 'plaintext', context = {} } = req.body as {
+        prefix: string;
+        suffix: string;
+        language: string;
+        context: AIContext;
+      };
+
+      const completion = await getInlineCompletion(prefix, suffix, language, context);
+      res.json({ completion });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async convert(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { code, fromLang, toLang, context = {} } = req.body as {
@@ -157,4 +173,15 @@ export const aiController = {
       next(error);
     }
   },
+
+  async autoExtensions(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { language } = req.body as { language?: string };
+      const recommendations = await autoDetectAndRecommendExtensions(language);
+      res.json({ recommendations: recommendations || [] });
+    } catch (error) {
+      next(error);
+    }
+  },
 };
+

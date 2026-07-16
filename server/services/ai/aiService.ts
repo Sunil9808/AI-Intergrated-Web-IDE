@@ -1,11 +1,43 @@
 import OpenAI from 'openai';
+import { GoogleGenerativeAI, GenerativeModel, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { Response } from 'express';
 
 let aiClient: OpenAI | null = null;
+let geminiClient: GoogleGenerativeAI | null = null;
+let geminiModel: GenerativeModel | null = null;
+
+export function getAIProvider(): string {
+  return (process.env.AI_PROVIDER || 'gemini').toLowerCase();
+}
+
+function getGeminiClient(): GenerativeModel {
+  if (!geminiClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+      throw new Error('GEMINI_API_KEY is not configured. Add it to your .env file.');
+    }
+    geminiClient = new GoogleGenerativeAI(apiKey);
+  }
+  if (!geminiModel) {
+    // Use gemini-2.0-flash-lite for higher free-tier quota, fallback to gemini-1.5-flash
+    const modelName = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+    geminiModel = geminiClient.getGenerativeModel({
+      model: modelName,
+      safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+      ],
+    });
+  }
+  return geminiModel;
+}
+
 
 function getAIClient(): OpenAI {
   if (!aiClient) {
-    const provider = (process.env.AI_PROVIDER || 'sambanova').toLowerCase();
+    const provider = getAIProvider();
     const isSambaNova = provider === 'sambanova';
     const apiKey = isSambaNova ? process.env.SAMBANOVA_API_KEY : process.env.OPENAI_API_KEY;
     const placeholder = isSambaNova ? 'your_sambanova_api_key_here' : 'your_openai_api_key_here';
@@ -25,10 +57,9 @@ function getAIClient(): OpenAI {
 }
 
 export function getAIModel(): string {
-  const provider = (process.env.AI_PROVIDER || 'sambanova').toLowerCase();
-  if (provider === 'sambanova') {
-    return process.env.SAMBANOVA_MODEL || 'Meta-Llama-3.3-70B-Instruct';
-  }
+  const provider = getAIProvider();
+  if (provider === 'gemini') return process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+  if (provider === 'sambanova') return process.env.SAMBANOVA_MODEL || 'Meta-Llama-3.3-70B-Instruct';
   return process.env.OPENAI_MODEL || 'gpt-4o';
 }
 
@@ -99,15 +130,79 @@ Current workspace context:`;
   return systemPrompt;
 }
 
-export async function streamChatResponse(
-  prompt: string,
-  context: AIContext,
-  res: Response
-): Promise<void> {
+// ── Gemini streaming ──────────────────────────────────────────────────────────
+
+async function streamGeminiResponse(prompt: string, context: AIContext, res: Response): Promise<void> {
+  const systemPrompt = buildSystemPrompt(context);
+  const model = getGeminiClient();
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  try {
+    const fullPrompt = `${systemPrompt}\n\n---\n\nUser: ${prompt}\n\nAssistant:`;
+    const result = await model.generateContentStream(fullPrompt);
+
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (error: unknown) {
+    const err = error as Error & { status?: number; code?: string; statusText?: string; errorDetails?: unknown };
+    console.error('[Gemini] Full error:', JSON.stringify({ message: err.message, status: err.status, code: err.code, errorDetails: err.errorDetails }));
+
+    let errorMessage = 'Gemini AI request failed';
+    if (err.message?.includes('API_KEY_INVALID') || err.message?.includes('API key not valid')) {
+      errorMessage = 'Invalid Gemini API key. Please check your .env file and restart the server.';
+    } else if (err.message?.includes('API key') || err.message?.includes('API_KEY')) {
+      errorMessage = 'Gemini API key error: ' + err.message;
+    } else if (err.status === 429 || err.message?.includes('429') || err.message?.includes('quota') || err.message?.includes('rate') || err.message?.includes('RESOURCE_EXHAUSTED')) {
+      errorMessage = '⚠️ Gemini rate limit hit. Your API key has exhausted the free quota. Get a new key from https://aistudio.google.com/app/apikey';
+    } else if (err.status === 403) {
+      errorMessage = 'Gemini API access denied. Check your API key permissions.';
+    } else if (err.message) {
+      errorMessage = err.message;
+    }
+
+    res.write(`data: ${JSON.stringify({ error: errorMessage })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+}
+
+
+async function getGeminiCompletion(prompt: string, context: AIContext, maxTokens = 2000): Promise<string> {
+  const systemPrompt = buildSystemPrompt(context);
+  const model = getGeminiClient();
+
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: `${systemPrompt}\n\n${prompt}` }] }],
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+  });
+
+  return result.response.text();
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export async function streamChatResponse(prompt: string, context: AIContext, res: Response): Promise<void> {
+  const provider = getAIProvider();
+
+  if (provider === 'gemini') {
+    return streamGeminiResponse(prompt, context, res);
+  }
+
+  // OpenAI / SambaNova path
   const systemPrompt = buildSystemPrompt(context);
   const model = getAIModel();
 
-  // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -160,11 +255,48 @@ export async function streamChatResponse(
   }
 }
 
-export async function getChatCompletion(
-  prompt: string,
-  context: AIContext,
-  maxTokens = 2000
+export async function getInlineCompletion(
+  prefix: string,
+  suffix: string,
+  language: string,
+  context: AIContext
 ): Promise<string> {
+  const prompt = `You are an inline code completion engine like Cursor Tab / GitHub Copilot.
+Complete the code at the cursor position. Return ONLY the text to insert at the cursor — no markdown fences, no explanation, no quotes.
+
+Language: ${language}
+
+Code BEFORE cursor:
+${prefix.slice(-3000)}
+
+Code AFTER cursor:
+${suffix.slice(0, 1000)}
+
+Rules:
+- Return only the completion text (what comes next as the developer types)
+- Match existing indentation and style
+- Prefer short, focused completions (1-5 lines max)
+- If no meaningful completion exists, return an empty response`;
+
+  const result = await getChatCompletion(prompt, context, 256);
+  return cleanInlineCompletion(result);
+}
+
+function cleanInlineCompletion(text: string): string {
+  let cleaned = text.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '');
+  }
+  return cleaned.replace(/^\n+/, '');
+}
+
+export async function getChatCompletion(prompt: string, context: AIContext, maxTokens = 2000): Promise<string> {
+  const provider = getAIProvider();
+
+  if (provider === 'gemini') {
+    return getGeminiCompletion(prompt, context, maxTokens);
+  }
+
   const systemPrompt = buildSystemPrompt(context);
   const model = getAIModel();
 

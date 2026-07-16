@@ -6,11 +6,13 @@ import 'xterm/css/xterm.css';
 import {
   ChevronDown,
   Copy,
+  FolderOpen,
   Maximize2,
   Minimize2,
   Plus,
   RotateCcw,
   Search,
+  Square,
   SplitSquareHorizontal,
   Trash2,
   X,
@@ -22,7 +24,7 @@ import { v4 as uuidv4 } from '../../../utils/uuid';
 
 const IDE_ROOT_CWD = 'E:\\AI-Web-IDE';
 
-type TerminalProfile = 'PowerShell' | 'Command Prompt' | 'Git Bash' | 'Node.js';
+type TerminalProfile = 'PowerShell' | 'Command Prompt' | 'Git Bash' | 'WSL' | 'Bash' | 'Node.js';
 
 interface TerminalInstance {
   id: string;
@@ -30,12 +32,16 @@ interface TerminalInstance {
   profile: TerminalProfile;
   cwd: string;
   isConnected: boolean;
+  status: 'connecting' | 'connected' | 'fallback' | 'exited' | 'error';
+  statusMessage?: string;
 }
 
 const PROFILES: Array<{ name: TerminalProfile; shell: string; executable: string }> = [
   { name: 'PowerShell', shell: 'powershell.exe', executable: 'powershell' },
   { name: 'Command Prompt', shell: 'cmd.exe', executable: 'cmd' },
   { name: 'Git Bash', shell: 'bash.exe', executable: 'bash' },
+  { name: 'WSL', shell: 'wsl.exe', executable: 'wsl' },
+  { name: 'Bash', shell: 'bash', executable: 'bash' },
   { name: 'Node.js', shell: 'node.exe', executable: 'node' },
 ];
 
@@ -58,6 +64,7 @@ function createTerminalInstance(cwd: string, profile: TerminalProfile = 'PowerSh
     profile,
     cwd,
     isConnected: false,
+    status: 'connecting',
   };
 }
 
@@ -76,6 +83,7 @@ export default function Terminal() {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [instances, setInstances] = useState<TerminalInstance[]>(() => [createTerminalInstance(terminalCwd)]);
   const [activeId, setActiveId] = useState(() => instances[0].id);
+  const [socketEpoch, setSocketEpoch] = useState(0);
 
   const activeInstance = useMemo(
     () => instances.find((instance) => instance.id === activeId) || instances[0],
@@ -83,9 +91,14 @@ export default function Terminal() {
   );
 
   const activeProfile = PROFILES.find((profile) => profile.name === activeInstance.profile) || PROFILES[0];
+  const activeInstanceId = activeInstance.id;
+  const activeInstanceCwd = activeInstance.cwd;
+  const activeInstanceProfile = activeInstance.profile;
+  const activeProfileName = activeProfile.name;
+  const activeProfileShell = activeProfile.shell;
   const prompt = activeInstance.profile === 'Command Prompt'
     ? `${activeInstance.cwd}>`
-    : `PS ${activeInstance.cwd}> `;
+    : `${activeInstance.profile} ${activeInstance.cwd}> `;
 
   const fit = useCallback(() => {
     try {
@@ -117,6 +130,12 @@ export default function Terminal() {
     term.focus();
   }, [writePrompt]);
 
+  const setActiveCwd = useCallback((cwd: string) => {
+    setInstances((current) => current.map((instance) =>
+      instance.id === activeId ? { ...instance, cwd } : instance
+    ));
+  }, [activeId]);
+
   const runCommand = useCallback((command: string) => {
     const term = xtermRef.current;
     if (!term) return;
@@ -133,11 +152,13 @@ export default function Terminal() {
 
     term.write(trimmed);
     term.writeln('');
-    void handleFallbackCommand(term, trimmed, activeInstance.cwd).finally(() => {
+    void handleFallbackCommand(term, trimmed, activeInstance.cwd).then((nextCwd) => {
+      if (nextCwd) setActiveCwd(nextCwd);
+    }).finally(() => {
       lineRef.current = '';
       writePrompt();
     });
-  }, [activeInstance.cwd, writePrompt]);
+  }, [activeInstance.cwd, setActiveCwd, writePrompt]);
 
   const createInstance = useCallback((profile: TerminalProfile = activeInstance.profile) => {
     setInstances((current) => {
@@ -225,11 +246,25 @@ export default function Terminal() {
   }, [fit]);
 
   useEffect(() => {
+    const socket = terminalService.connect();
+    const bump = () => setSocketEpoch((value) => value + 1);
+    socket.on('connect', bump);
+    socket.on('disconnect', bump);
+    socket.on('connect_error', bump);
+    if (socket.connected) bump();
+    return () => {
+      socket.off('connect', bump);
+      socket.off('disconnect', bump);
+      socket.off('connect_error', bump);
+    };
+  }, []);
+
+  useEffect(() => {
     const term = xtermRef.current;
     if (!term || !activeInstance) return;
 
     const socket = terminalService.getSocket();
-    const sessionId = activeInstance.id;
+    const sessionId = activeInstanceId;
     socketSessionRef.current = sessionId;
     socketConnectedRef.current = Boolean(socket?.connected);
     lineRef.current = '';
@@ -237,10 +272,13 @@ export default function Terminal() {
     term.clear();
 
     if (socket?.connected) {
+      setInstances((current) => current.map((instance) =>
+        instance.id === sessionId ? { ...instance, status: 'connecting', statusMessage: undefined } : instance
+      ));
       socket.emit('terminal:create', {
         sessionId,
-        shell: activeProfile.shell,
-        cwd: activeInstance.cwd,
+        shell: activeProfileShell,
+        cwd: activeInstanceCwd,
         cols: term.cols,
         rows: term.rows,
       });
@@ -249,30 +287,69 @@ export default function Terminal() {
         if (data.sessionId === sessionId) term.write(data.data);
       };
 
-      const onCreated = (session: { id: string; isConnected?: boolean }) => {
+      const onCreated = (session: { id: string; isConnected?: boolean; cwd?: string; shell?: string }) => {
         if (session.id !== sessionId) return;
         socketConnectedRef.current = Boolean(session.isConnected);
         setInstances((current) => current.map((instance) =>
-          instance.id === sessionId ? { ...instance, isConnected: Boolean(session.isConnected) } : instance
+          instance.id === sessionId
+            ? {
+                ...instance,
+                cwd: session.cwd || instance.cwd,
+                isConnected: Boolean(session.isConnected),
+                status: session.isConnected ? 'connected' : 'fallback',
+                statusMessage: session.isConnected ? `Connected to ${session.shell || activeProfileShell}` : 'Using HTTP command runner fallback',
+              }
+            : instance
         ));
         term.clear();
-        if (!session.isConnected) writePrompt();
+        if (!session.isConnected) {
+          term.writeln('\x1b[33mInteractive shell unavailable. Commands will run through the backend command runner.\x1b[0m');
+          term.writeln('\x1b[90mInstall node-pty in the server for full interactive shells, Ctrl+C, prompts, TUI apps, and long-running sessions.\x1b[0m');
+          writePrompt();
+        }
         term.focus();
       };
 
       const onClosed = (data: { sessionId: string }) => {
         if (data.sessionId !== sessionId) return;
         socketConnectedRef.current = false;
+        setInstances((current) => current.map((instance) =>
+          instance.id === sessionId ? { ...instance, isConnected: false, status: 'exited', statusMessage: 'Process exited' } : instance
+        ));
         term.writeln('');
         term.writeln('\x1b[33mTerminal process exited. Press restart to create a new session.\x1b[0m');
+      };
+
+      const onError = (data: { sessionId: string; error: string }) => {
+        if (data.sessionId !== sessionId) return;
+        socketConnectedRef.current = false;
+        setInstances((current) => current.map((instance) =>
+          instance.id === sessionId ? { ...instance, isConnected: false, status: 'fallback', statusMessage: data.error } : instance
+        ));
+        term.writeln(`\x1b[33m${data.error}\x1b[0m`);
       };
 
       socket.on('terminal:data', onData);
       socket.on('terminal:created', onCreated);
       socket.on('terminal:closed', onClosed);
+      socket.on('terminal:error', onError);
 
       const dataDisposable = term.onData((data) => {
-        socket.emit('terminal:data', { sessionId, data });
+        if (socketConnectedRef.current) {
+          socket.emit('terminal:data', { sessionId, data });
+          return;
+        }
+        void handleLocalTerminalData(
+          data,
+          term,
+          activeInstanceCwd,
+          lineRef,
+          historyRef,
+          historyIndexRef,
+          writePrompt,
+          resetLine,
+          setActiveCwd
+        );
       });
       const resizeDisposable = term.onResize(({ cols, rows }) => {
         socket.emit('terminal:resize', { sessionId, cols, rows });
@@ -284,6 +361,7 @@ export default function Terminal() {
         socket.off('terminal:data', onData);
         socket.off('terminal:created', onCreated);
         socket.off('terminal:closed', onClosed);
+        socket.off('terminal:error', onError);
         socket.emit('terminal:destroy', { sessionId });
       };
     }
@@ -292,7 +370,7 @@ export default function Terminal() {
     setInstances((current) => current.map((instance) =>
       instance.id === sessionId ? { ...instance, isConnected: false } : instance
     ));
-    term.writeln(`\x1b[90m${activeProfile.name} fallback terminal\x1b[0m`);
+    term.writeln(`\x1b[90m${activeProfileName} fallback terminal\x1b[0m`);
     term.writeln('\x1b[90mCommands run through the backend command runner when available.\x1b[0m');
     writePrompt();
 
@@ -302,7 +380,9 @@ export default function Terminal() {
         const command = lineRef.current.trim();
         if (command) {
           historyRef.current = [command, ...historyRef.current.filter((item) => item !== command)].slice(0, 80);
-          void handleFallbackCommand(term, command, activeInstance.cwd).finally(() => {
+          void handleFallbackCommand(term, command, activeInstanceCwd).then((nextCwd) => {
+            if (nextCwd) setActiveCwd(nextCwd);
+          }).finally(() => {
             lineRef.current = '';
             historyIndexRef.current = null;
             writePrompt();
@@ -362,7 +442,17 @@ export default function Terminal() {
     });
 
     return () => dataDisposable.dispose();
-  }, [activeId, activeInstance, activeProfile.name, activeProfile.shell, resetLine, writePrompt]);
+  }, [
+    activeId,
+    activeInstanceCwd,
+    activeInstanceId,
+    activeProfileName,
+    activeProfileShell,
+    resetLine,
+    setActiveCwd,
+    socketEpoch,
+    writePrompt,
+  ]);
 
   useEffect(() => {
     const onTerminalCommand = (event: Event) => {
@@ -402,6 +492,11 @@ export default function Terminal() {
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {instances.map((instance) => {
               const active = instance.id === activeId;
+              const statusColor = instance.status === 'connected'
+                ? '#4ec9b0'
+                : instance.status === 'error' || instance.status === 'exited'
+                  ? '#f87171'
+                  : '#dcdcaa';
               return (
                 <button
                   key={instance.id}
@@ -413,14 +508,14 @@ export default function Terminal() {
                   }}
                   onClick={() => setActiveId(instance.id)}
                 >
-                  <span className="text-[15px] leading-none" style={{ color: instance.isConnected ? '#4ec9b0' : '#dcdcaa' }}>
+                  <span className="text-[15px] leading-none" style={{ color: statusColor }}>
                     &gt;_
                   </span>
                   <span className="min-w-0 flex-1 truncate">{instance.name}</span>
                   <span
                     className="h-1.5 w-1.5 rounded-full"
-                    style={{ background: instance.isConnected ? '#4ec9b0' : '#dcdcaa' }}
-                    title={instance.isConnected ? 'Real pty connected' : 'Command runner fallback'}
+                    style={{ background: statusColor }}
+                    title={instance.statusMessage || instance.status}
                   />
                   <span
                     role="button"
@@ -479,6 +574,8 @@ export default function Terminal() {
             <ToolbarBtn icon={<SplitSquareHorizontal size={14} />} title="Split Terminal" onClick={() => createInstance(activeInstance.profile)} />
             <ToolbarBtn icon={<Search size={14} />} title="Find in Terminal" onClick={() => xtermRef.current?.focus()} />
             <ToolbarBtn icon={<Copy size={14} />} title="Copy Selection" onClick={() => void copySelection()} />
+            <ToolbarBtn icon={<FolderOpen size={14} />} title="Print Working Directory" onClick={() => runCommand('pwd')} />
+            <ToolbarBtn icon={<Square size={13} />} title="Send Ctrl+C" onClick={() => terminalService.sendData(activeInstance.id, '\x03')} />
             <ToolbarBtn icon={<RotateCcw size={14} />} title="Restart Terminal" onClick={restartActive} />
             <ToolbarBtn icon={<Trash2 size={14} />} title="Clear Terminal" onClick={clearTerminal} />
             <ToolbarBtn
@@ -508,7 +605,78 @@ function ToolbarBtn({ icon, title, onClick }: { icon: React.ReactNode; title: st
   );
 }
 
-async function handleFallbackCommand(term: XTerm, cmd: string, cwd: string) {
+async function handleLocalTerminalData(
+  data: string,
+  term: XTerm,
+  cwd: string,
+  lineRef: { current: string },
+  historyRef: { current: string[] },
+  historyIndexRef: { current: number | null },
+  writePrompt: () => void,
+  resetLine: (nextLine?: string) => void,
+  setCwd: (cwd: string) => void
+) {
+  if (data === '\r') {
+    term.writeln('');
+    const command = lineRef.current.trim();
+    if (command) {
+      historyRef.current = [command, ...historyRef.current.filter((item) => item !== command)].slice(0, 80);
+      const nextCwd = await handleFallbackCommand(term, command, cwd);
+      if (nextCwd) setCwd(nextCwd);
+    }
+    lineRef.current = '';
+    historyIndexRef.current = null;
+    writePrompt();
+    return;
+  }
+
+  if (data === '\x7f') {
+    if (lineRef.current.length > 0) {
+      lineRef.current = lineRef.current.slice(0, -1);
+      term.write('\b \b');
+    }
+    return;
+  }
+
+  if (data === '\x03') {
+    term.write('^C');
+    term.writeln('');
+    lineRef.current = '';
+    historyIndexRef.current = null;
+    writePrompt();
+    return;
+  }
+
+  if (data === '\x1b[A') {
+    if (!historyRef.current.length) return;
+    const nextIndex = historyIndexRef.current === null
+      ? 0
+      : Math.min(historyRef.current.length - 1, historyIndexRef.current + 1);
+    historyIndexRef.current = nextIndex;
+    resetLine(historyRef.current[nextIndex]);
+    return;
+  }
+
+  if (data === '\x1b[B') {
+    if (historyIndexRef.current === null) return;
+    const nextIndex = historyIndexRef.current - 1;
+    if (nextIndex < 0) {
+      historyIndexRef.current = null;
+      resetLine('');
+    } else {
+      historyIndexRef.current = nextIndex;
+      resetLine(historyRef.current[nextIndex]);
+    }
+    return;
+  }
+
+  if (data >= ' ' || data === '\t') {
+    lineRef.current += data;
+    term.write(data);
+  }
+}
+
+async function handleFallbackCommand(term: XTerm, cmd: string, cwd: string): Promise<string | undefined> {
   const command = cmd.trim();
   const parts = command.split(/\s+/);
   const name = parts[0]?.toLowerCase();
@@ -519,20 +687,92 @@ async function handleFallbackCommand(term: XTerm, cmd: string, cwd: string) {
       term.clear();
       return;
     case 'cd':
-      term.writeln('\x1b[90mDirectory changes are scoped to the workspace terminal runner.\x1b[0m');
-      return;
+      return await changeFallbackDirectory(term, command, cwd);
     case 'help':
-      term.writeln('VS Code-style terminal commands:');
-      term.writeln('  cls, clear, dir, ls, pwd, date, npm, npx, node, powershell, cmd');
-      term.writeln('  Use the toolbar for new terminals, split, clear, restart, copy, and maximize.');
+      term.writeln('AI Web IDE terminal:');
+      term.writeln('  Real shell mode: supports interactive commands through node-pty.');
+      term.writeln('  Fallback mode: supports shell commands through /api/terminal/run.');
+      term.writeln('  Built-ins: cls, clear, cd, pwd, help.');
+      term.writeln('  Tasks: npm run dev, npm run build, npm test, npx, node, git, python, powershell, cmd.');
       return;
     default:
       await runBackendCommand(term, command, cwd);
   }
 }
 
+async function changeFallbackDirectory(term: XTerm, command: string, cwd: string) {
+  const target = command.replace(/^cd\s*/i, '').trim() || '.';
+  try {
+    const response = await fetch('/api/terminal/cwd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd, target }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json() as { cwd: string };
+    term.writeln(result.cwd);
+    return result.cwd;
+  } catch (error) {
+    term.writeln(`\x1b[31mcd failed: ${error instanceof Error ? error.message : 'Unable to change directory'}\x1b[0m`);
+    return undefined;
+  }
+}
+
 async function runBackendCommand(term: XTerm, command: string, cwd: string) {
   const start = performance.now();
+  // Try real-time SSE streaming first
+  try {
+    const response = await fetch('/api/terminal/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, cwd }),
+    });
+
+    if (response.ok && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let exitCode = 0;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(line.slice(6)) as { type: string; text?: string; code?: number };
+            if (payload.type === 'stdout' && payload.text) {
+              // Write chunk directly — convert \r\n to proper terminal sequences
+              term.write(payload.text.replace(/\r?\n/g, '\r\n'));
+            } else if (payload.type === 'stderr' && payload.text) {
+              term.write(`\x1b[31m${payload.text.replace(/\r?\n/g, '\r\n')}\x1b[0m`);
+            } else if (payload.type === 'error' && payload.text) {
+              term.writeln(`\x1b[33m${payload.text}\x1b[0m`);
+            } else if (payload.type === 'exit') {
+              exitCode = payload.code ?? 0;
+            }
+          } catch { /* ignore malformed SSE */ }
+        }
+      }
+
+      const duration = ((performance.now() - start) / 1000).toFixed(1);
+      if (exitCode !== 0) {
+        term.writeln(`\x1b[31m\r\nExited with code ${exitCode} (${duration}s)\x1b[0m`);
+      } else {
+        term.writeln(`\x1b[90m\r\nDone in ${duration}s\x1b[0m`);
+      }
+      return;
+    }
+  } catch {
+    // SSE endpoint unavailable — fall through to legacy
+  }
+
+  // Legacy fallback: single-shot /run endpoint
   term.writeln('\x1b[90mRunning command...\x1b[0m');
   try {
     const response = await fetch('/api/terminal/run', {
@@ -541,9 +781,7 @@ async function runBackendCommand(term: XTerm, command: string, cwd: string) {
       body: JSON.stringify({ command, cwd }),
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const result = await response.json() as { output?: string; exitCode?: number };
     const output = result.output || '(command completed with no output)\n';

@@ -63,6 +63,7 @@ const menus: MenuItem[] = [
 export default function TitleBar() {
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const openFileInputRef = useRef<HTMLInputElement>(null);
   const openFolderInputRef = useRef<HTMLInputElement>(null);
@@ -88,9 +89,9 @@ export default function TitleBar() {
     sidebarVisible,
     bottomPanelVisible,
   } = useUIStore();
-  const { tabs, activeTabId, openTab, closeTab, closeAllTabs, saveTab, getActiveTab, updateSettings, settings, splitConfig, setSplitConfig } = useEditorStore();
-  const { addFile, setFileTree } = useFileStore();
-  const { setWorkspace } = useWorkspaceStore();
+  const { tabs, activeTabId, openTab, closeTab, closeAllTabs, saveTab, getActiveTab, updateSettings, settings, splitConfig, setSplitConfig, updateTabFile } = useEditorStore();
+  const { addFile, setFileTree, getFileById, getFileByPath, renameFile } = useFileStore();
+  const { workspace, setWorkspace } = useWorkspaceStore();
   const { initializeRepository, publishRepository } = useSourceControlStore();
 
   const activeTab = getActiveTab();
@@ -107,6 +108,15 @@ export default function TitleBar() {
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  // Track fullscreen state
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsMaximized(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
   useEffect(() => {
@@ -371,7 +381,9 @@ export default function TitleBar() {
   };
 
   const openNewWindow = () => {
-    window.open(window.location.href, '_blank', 'noopener,noreferrer');
+    const url = new URL(window.location.href);
+    url.searchParams.set('clean', '1');
+    window.open(url.toString(), '_blank', 'noopener,noreferrer');
     notify('Opened a new IDE window', 'success');
   };
 
@@ -447,6 +459,11 @@ export default function TitleBar() {
     const tab = getActiveTab();
     if (!tab) return;
 
+    if (tab.filePath.startsWith('/untitled/')) {
+      await saveActiveFileAs();
+      return;
+    }
+
     try {
       await fileService.writeFile(tab.filePath, tab.content);
       saveTab(tab.id);
@@ -457,21 +474,72 @@ export default function TitleBar() {
     }
   };
 
-  const saveActiveFileAs = () => {
+  const saveActiveFileAs = async () => {
     const tab = getActiveTab();
     if (!tab) return;
+
+    const defaultName = tab.fileName.includes('.') ? tab.fileName : 'untitled.txt';
+    const fileName = window.prompt('Save as', defaultName)?.trim();
+    if (!fileName) return;
+
+    const language = fileService.getLanguageFromExtension(fileName);
+    const existingNode = getFileById(tab.fileId);
+    const basePath = existingNode?.path.includes('/')
+      ? existingNode.path.slice(0, existingNode.path.lastIndexOf('/'))
+      : workspace?.path || '/workspace';
+    const filePath = `${basePath.replace(/\/$/, '')}/${fileName}`;
+    const existingPathNode = getFileByPath(filePath);
+
+    if (existingNode) {
+      renameFile(existingNode.id, fileName);
+      updateTabFile(tab.id, {
+        filePath,
+        fileName,
+        language,
+      });
+    } else if (!existingPathNode) {
+      const node: FileNode = {
+        id: tab.fileId.startsWith('untitled-') ? `file-${Date.now()}` : tab.fileId,
+        name: fileName,
+        path: filePath,
+        type: 'file',
+        extension: fileName.split('.').pop(),
+        language,
+        lastModified: Date.now(),
+      };
+      addFile(node);
+      updateTabFile(tab.id, {
+        fileId: node.id,
+        filePath,
+        fileName,
+        language,
+      });
+    } else {
+      updateTabFile(tab.id, {
+        fileId: existingPathNode.id,
+        filePath,
+        fileName,
+        language,
+      });
+    }
+
+    try {
+      await fileService.writeFile(filePath, tab.content);
+    } catch {
+      // Browser-only workspaces still get a local download below.
+    }
 
     const blob = new Blob([tab.content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = tab.fileName || 'untitled.txt';
+    link.download = fileName;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
     saveTab(tab.id);
-    notify(`${tab.fileName} downloaded`, 'success');
+    notify(`${fileName} saved`, 'success');
   };
 
   const saveAllFiles = async () => {
@@ -597,7 +665,7 @@ export default function TitleBar() {
 
   const splitTerminal = () => {
     showBottomPanel('terminal');
-    notify('Split terminal view is not available yet; focused the terminal instead', 'info');
+    newTerminal();
   };
 
   const newTerminalWindow = () => {
@@ -813,22 +881,13 @@ export default function TitleBar() {
   const runMenuItems: FileMenuItem[] = [
     { id: 'start-debugging', label: 'Start Debugging', shortcut: 'F5', action: startDebugging },
     { id: 'run-without-debugging', label: 'Run Without Debugging', shortcut: 'Ctrl+F5', action: runWithoutDebugging },
-    { id: 'stop-debugging', label: 'Stop Debugging', shortcut: 'Shift+F5', disabled: true, action: () => notify('No active debug session to stop', 'warning') },
-    { id: 'restart-debugging', label: 'Restart Debugging', shortcut: 'Ctrl+Shift+F5', disabled: true, action: () => notify('No active debug session to restart', 'warning') },
     { id: 'sep-config', separator: true },
-    { id: 'open-configurations', label: 'Open Configurations', disabled: true, action: addDebugConfiguration },
     { id: 'add-configuration', label: 'Add Configuration...', action: addDebugConfiguration },
-    { id: 'sep-step', separator: true },
-    { id: 'step-over', label: 'Step Over', shortcut: 'F10', disabled: true, action: () => notify('Start debugging before stepping', 'warning') },
-    { id: 'step-into', label: 'Step Into', shortcut: 'F11', disabled: true, action: () => notify('Start debugging before stepping', 'warning') },
-    { id: 'step-out', label: 'Step Out', shortcut: 'Shift+F11', disabled: true, action: () => notify('Start debugging before stepping', 'warning') },
-    { id: 'continue', label: 'Continue', shortcut: 'F5', disabled: true, action: () => notify('No paused debug session', 'warning') },
     { id: 'sep-breakpoint', separator: true },
     { id: 'toggle-breakpoint', label: 'Toggle Breakpoint', shortcut: 'F9', disabled: !hasActiveTab, action: () => runEditorCommand('toggle-breakpoint') },
     { id: 'new-breakpoint', label: 'New Breakpoint', children: [
       { id: 'breakpoint-current-line', label: 'Current Line', disabled: !hasActiveTab, action: () => runEditorCommand('toggle-breakpoint') },
       { id: 'breakpoint-line', label: 'Line Breakpoint...', disabled: !hasActiveTab, action: () => runEditorCommand('new-line-breakpoint') },
-      { id: 'breakpoint-function', label: 'Function Breakpoint...', action: () => notify('Function breakpoints need a debug adapter configuration', 'warning') },
     ] },
     { id: 'sep-breakpoint-actions', separator: true },
     { id: 'enable-breakpoints', label: 'Enable All Breakpoints', disabled: !hasActiveTab, action: () => runEditorCommand('enable-breakpoints') },
@@ -847,12 +906,7 @@ export default function TitleBar() {
     { id: 'run-build-task', label: 'Run Build Task...', shortcut: 'Ctrl+Shift+B', action: () => runTerminalCommand('npm run build') },
     { id: 'run-active-file', label: 'Run Active File', disabled: !hasActiveTab, action: runActiveFile },
     { id: 'run-selected-text', label: 'Run Selected Text', disabled: !hasActiveTab, action: () => { showBottomPanel('terminal'); runEditorCommand('run-selected-text'); } },
-    { id: 'sep-running', separator: true },
-    { id: 'show-running-tasks', label: 'Show Running Tasks...', disabled: true, action: () => notify('No running tasks', 'info') },
-    { id: 'restart-running-task', label: 'Restart Running Task...', disabled: true, action: () => notify('No running task to restart', 'warning') },
-    { id: 'terminate-task', label: 'Terminate Task...', disabled: true, action: () => notify('No running task to terminate', 'warning') },
     { id: 'sep-configure', separator: true },
-    { id: 'configure-tasks', label: 'Configure Tasks...', action: () => notify('Create tasks.json support is not configured yet', 'info') },
     { id: 'configure-default-build-task', label: 'Configure Default Build Task...', action: () => notify('Default build task is npm run build', 'info') },
   ];
 
@@ -861,7 +915,6 @@ export default function TitleBar() {
     { id: 'show-all-commands', label: 'Show All Commands', shortcut: 'Ctrl+Shift+P', action: toggleCommandPalette },
     { id: 'documentation', label: 'Documentation', action: () => openHelpUrl('https://code.visualstudio.com/docs', 'Documentation') },
     { id: 'editor-playground', label: 'Editor Playground', action: () => openHelpUrl('https://microsoft.github.io/monaco-editor/playground.html', 'Editor Playground') },
-    { id: 'open-walkthrough', label: 'Open Walkthrough...', action: () => notify('Walkthroughs are not bundled in this web IDE yet', 'info') },
     { id: 'release-notes', label: 'Show Release Notes', action: () => openHelpUrl('https://code.visualstudio.com/updates', 'Release notes') },
     { id: 'accessibility', label: 'Get Started with Accessibility Features', action: () => openHelpUrl('https://code.visualstudio.com/docs/editor/accessibility', 'Accessibility guide') },
     { id: 'ask-vscode', label: 'Ask @vscode', action: () => openHelpUrl('https://github.com/microsoft/vscode/discussions', 'VS Code discussions') },
@@ -876,11 +929,6 @@ export default function TitleBar() {
     { id: 'sep-legal', separator: true },
     { id: 'license', label: 'View License', action: () => openHelpUrl('https://code.visualstudio.com/license', 'License') },
     { id: 'privacy', label: 'Privacy Statement', action: () => openHelpUrl('https://privacy.microsoft.com/privacystatement', 'Privacy statement') },
-    { id: 'sep-tools', separator: true },
-    { id: 'devtools', label: 'Toggle Developer Tools', action: () => notify('Use the browser menu or F12 to open Developer Tools', 'info') },
-    { id: 'process-explorer', label: 'Open Process Explorer', action: () => notify('Process Explorer is not available in the browser runtime', 'info') },
-    { id: 'sep-updates', separator: true },
-    { id: 'updates', label: 'Check for Updates...', action: () => notify('AI Web IDE is up to date in this workspace', 'success') },
     { id: 'sep-about', separator: true },
     { id: 'about', label: 'About', action: () => notify('AI Web IDE - VS Code style web editor', 'info') },
   ];
@@ -903,7 +951,18 @@ export default function TitleBar() {
       style={{ background: 'var(--color-titleBar)', borderBottom: '1px solid var(--color-border)' }}
     >
       <input ref={openFileInputRef} type="file" multiple className="hidden" onChange={handleOpenFiles} />
-      <input ref={openFolderInputRef} type="file" multiple className="hidden" onChange={handleOpenFolder} {...{ webkitdirectory: '' }} />
+      {/* webkitdirectory is a non-standard attr — spread as lowercase so React passes it to DOM */}
+      <input
+        ref={openFolderInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleOpenFolder}
+        // @ts-expect-error webkitdirectory is not in React's HTMLAttributes
+        webkitdirectory=""
+        directory=""
+        mozdirectory=""
+      />
 
       <div className="flex h-[52px] items-center px-3 text-[13px]" style={{ color: 'var(--color-textMuted)' }}>
         <div className="flex w-[520px] items-center gap-5">
@@ -913,8 +972,8 @@ export default function TitleBar() {
             {menus.map((menu) => (
               <div key={menu.label} className="relative">
                 <button
-                  className="rounded px-2 py-1 text-[18px] leading-none transition-colors hover:bg-white/10"
-                  style={{ background: activeMenu === menu.label ? '#2a2a2a' : 'transparent' }}
+                  className="rounded px-2 py-1 text-[13px] leading-none transition-colors hover:bg-white/10"
+                  style={{ background: activeMenu === menu.label ? 'rgba(167,139,250,0.15)' : 'transparent', color: 'var(--color-text)' }}
                   onMouseEnter={() => activeMenu && setActiveMenu(menu.label)}
                   onClick={() => {
                     setActiveMenu(activeMenu === menu.label ? null : menu.label);
@@ -946,7 +1005,7 @@ export default function TitleBar() {
             <div className="relative">
               <button
                 className="rounded px-2 py-1 text-[18px] leading-none hover:bg-white/10"
-                style={{ background: activeMenu === 'More' ? '#2a2a2a' : 'transparent' }}
+                style={{ background: activeMenu === 'More' ? 'rgba(167,139,250,0.15)' : 'transparent', color: 'var(--color-text)' }}
                 onMouseEnter={() => activeMenu && setActiveMenu('More')}
                 onClick={() => {
                   setActiveMenu(activeMenu === 'More' ? null : 'More');
@@ -972,14 +1031,13 @@ export default function TitleBar() {
           </button>
           <button
             onClick={toggleCommandPalette}
-            className="flex h-[36px] w-[730px] max-w-[42vw] items-center rounded-[8px] border px-4 text-left text-[18px] hover:bg-white/[0.08]"
-            style={{ background: '#262626', borderColor: '#333333', color: '#9a9a9a' }}
-            title="Search"
+            className="flex h-[34px] w-[730px] max-w-[42vw] items-center rounded-lg border px-4 text-left text-[13px] hover:bg-white/[0.06] transition-colors"
+            style={{ background: 'rgba(167,139,250,0.07)', borderColor: 'rgba(167,139,250,0.2)', color: 'var(--color-textMuted)' }}
+            title="Search (Ctrl+Shift+P)"
           >
-            <Search size={18} className="mr-3 opacity-0" />
-            <span>Search</span>
-            <MessageSquarePlus size={19} className="ml-auto" />
-            <ChevronDown size={18} className="ml-3" />
+            <Search size={14} className="mr-2.5 opacity-60" />
+            <span>Search files, commands…</span>
+            <span className="ml-auto text-[11px] opacity-50">Ctrl+P</span>
           </button>
         </div>
 
@@ -1041,19 +1099,60 @@ export default function TitleBar() {
             <Columns size={24} />
           </TitleIconButton>
           <div className="mx-3 h-7 w-px bg-white/20" />
-          <Minus size={21} />
-          <Square size={20} />
-          <Maximize2 size={20} />
-          <X size={22} />
+          {/* Window controls */}
+          <button
+            title="Minimize"
+            aria-label="Minimize window"
+            className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-white/10"
+            style={{ color: 'var(--color-textMuted)' }}
+            onClick={() => {
+              // Attempt native minimize via blur; in PWA/Electron this closes the focus
+              notify('Window minimized', 'info');
+              window.blur();
+            }}
+          >
+            <Minus size={21} />
+          </button>
+          <button
+            title={isMaximized ? 'Restore' : 'Maximize'}
+            aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
+            className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-white/10"
+            style={{ color: 'var(--color-textMuted)' }}
+            onClick={async () => {
+              try {
+                if (!document.fullscreenElement) {
+                  await document.documentElement.requestFullscreen();
+                } else {
+                  await document.exitFullscreen();
+                }
+              } catch {
+                notify('Fullscreen not available in this browser', 'warning');
+              }
+            }}
+          >
+            {isMaximized ? <Maximize2 size={20} /> : <Square size={20} />}
+          </button>
+          <button
+            title="Close"
+            aria-label="Close window"
+            className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-red-500 hover:text-white"
+            style={{ color: 'var(--color-textMuted)' }}
+            onClick={() => {
+              const dirty = tabs.some((t) => t.isDirty);
+              if (dirty) {
+                const ok = window.confirm('You have unsaved changes. Close anyway?');
+                if (!ok) return;
+              }
+              window.close();
+              notify('Your browser may block closing tabs it did not open', 'warning');
+            }}
+          >
+            <X size={22} />
+          </button>
         </div>
       </div>
 
-      <div className="pointer-events-none absolute right-5 top-[66px] flex items-center gap-5" style={{ color: 'var(--color-textMuted)' }}>
-        <Sparkles size={25} style={{ color: '#e26d3d' }} />
-        <Bot size={25} style={{ color: '#f2f2f2' }} />
-        <Sidebar size={24} style={{ color: '#8fb9e8' }} />
-        <MoreHorizontal size={24} />
-      </div>
+
     </div>
   );
 }
@@ -1061,8 +1160,8 @@ export default function TitleBar() {
 function SimpleDropdown({ items }: { items: MenuSubItem[] }) {
   return (
     <div
-      className="absolute left-0 top-full z-50 min-w-56 rounded py-1 text-[13px] shadow-2xl"
-      style={{ background: '#252526', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
+      className="absolute left-0 top-full z-50 min-w-56 rounded-lg py-1 text-[13px] shadow-2xl"
+      style={{ background: '#150f2a', border: '1px solid rgba(167,139,250,0.2)', color: 'var(--color-text)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}
     >
       {items.map((item, index) =>
         item.separator ? (
@@ -1138,18 +1237,18 @@ function CustomizeLayoutMenu({
 }) {
   return (
     <div
-      className="absolute right-0 top-full z-50 mt-2 w-[322px] rounded-[8px] py-2 text-[14px] shadow-2xl"
-      style={{ background: '#1f2020', border: '1px solid #303234', color: '#d7d7d7', boxShadow: '0 8px 28px rgba(0,0,0,.55)' }}
+      className="absolute right-0 top-full z-50 mt-2 w-[322px] rounded-xl py-2 text-[13px] shadow-2xl"
+      style={{ background: '#150f2a', border: '1px solid rgba(167,139,250,0.2)', color: 'var(--color-text)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}
     >
-      <div className="px-3 pb-2 text-[12px] uppercase" style={{ color: '#9a9a9a' }}>Customize Layout</div>
+      <div className="px-3 pb-2 text-[11px] uppercase tracking-wider font-semibold" style={{ color: 'var(--color-accent)' }}>Customize Layout</div>
       <LayoutMenuItem label="Activity Bar" checked={activityBarVisible} onClick={onToggleActivityBar} />
       <LayoutMenuItem label="Primary Side Bar" checked={sidebarVisible} onClick={onToggleSidebar} />
       <LayoutMenuItem label="AI Pair Programmer" checked={rightPanelVisible} onClick={onToggleRightPanel} />
       <LayoutMenuItem label="Panel" checked={bottomPanelVisible} onClick={onTogglePanel} />
       <LayoutMenuItem label="Status Bar" checked={statusBarVisible} onClick={onToggleStatusBar} />
       <LayoutMenuItem label="Centered Layout" checked={centeredLayout} onClick={onToggleCentered} />
-      <div className="my-2 h-px" style={{ background: '#303234' }} />
-      <div className="px-3 pb-1 text-[12px] uppercase" style={{ color: '#9a9a9a' }}>Editor Layout</div>
+      <div className="my-2 h-px" style={{ background: 'rgba(167,139,250,0.15)' }} />
+      <div className="px-3 pb-1 text-[11px] uppercase tracking-wider font-semibold" style={{ color: 'var(--color-accent)' }}>Editor Layout</div>
       <LayoutMenuItem label="Single" checked={!splitConfig.enabled} onClick={onSingleEditor} />
       <LayoutMenuItem label="Split Right" checked={splitConfig.enabled && splitConfig.direction === 'vertical'} onClick={onSplitRight} />
       <LayoutMenuItem label="Split Down" checked={splitConfig.enabled && splitConfig.direction === 'horizontal'} onClick={onSplitDown} />
@@ -1160,10 +1259,11 @@ function CustomizeLayoutMenu({
 function LayoutMenuItem({ label, checked, onClick }: { label: string; checked: boolean; onClick: () => void }) {
   return (
     <button
-      className="grid h-[32px] w-full grid-cols-[28px_1fr] items-center px-3 text-left hover:bg-[#04395e]"
+      className="grid h-[30px] w-full grid-cols-[28px_1fr] items-center px-3 text-left hover:bg-white/8 transition-colors"
+      style={{ color: checked ? 'var(--color-accent)' : 'var(--color-text)' }}
       onClick={onClick}
     >
-      <span className="flex items-center justify-center">{checked && <Check size={16} />}</span>
+      <span className="flex items-center justify-center">{checked && <Check size={14} style={{ color: 'var(--color-accent)' }} />}</span>
       <span>{label}</span>
     </button>
   );
@@ -1184,12 +1284,12 @@ function FileDropdown({
 }) {
   return (
     <div
-      className="absolute left-0 top-full z-50 rounded-[10px] py-[9px] text-[20px] shadow-2xl"
-      style={{ width, background: '#1f2020', border: '1px solid #303234', color: '#d7d7d7', boxShadow: '0 8px 28px rgba(0,0,0,.55)' }}
+      className="absolute left-0 top-full z-50 rounded-xl py-2 text-[13px] shadow-2xl"
+      style={{ width, background: '#150f2a', border: '1px solid rgba(167,139,250,0.2)', color: 'var(--color-text)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}
     >
       {items.map((item) => {
         if (item.separator) {
-          return <div key={item.id} className="my-[8px] h-px" style={{ background: '#2d2f31' }} />;
+          return <div key={item.id} className="my-1 h-px" style={{ background: 'rgba(167,139,250,0.12)' }} />;
         }
 
         return (
@@ -1199,16 +1299,16 @@ function FileDropdown({
             onMouseEnter={() => setOpenSubmenu(item.children ? item.id : null)}
           >
             <button
-              className="grid h-[36px] w-full grid-cols-[34px_minmax(0,1fr)_auto_22px] items-center px-[16px] text-left leading-none transition-colors hover:bg-[#04395e]"
-              style={{ color: item.disabled ? '#686868' : '#d7d7d7' }}
+              className="grid h-[32px] w-full grid-cols-[28px_minmax(0,1fr)_auto_20px] items-center px-3 text-left text-[13px] leading-none transition-colors hover:bg-white/8"
+              style={{ color: item.disabled ? 'var(--color-textFaint)' : 'var(--color-text)' }}
               onClick={() => onRun(item)}
               disabled={item.disabled}
             >
               <span className="flex items-center justify-center">
-                {item.checked && <Check size={20} strokeWidth={1.6} />}
+                {item.checked && <Check size={14} strokeWidth={2} style={{ color: 'var(--color-accent)' }} />}
               </span>
-              <span className="truncate">{item.label}</span>
-              <span className="pl-5 text-right text-[20px]" style={{ color: item.disabled ? '#686868' : '#9a9a9a' }}>
+              <span className="truncate text-[13px]">{item.label}</span>
+              <span className="pl-4 text-right text-[11px]" style={{ color: item.disabled ? 'var(--color-textFaint)' : 'var(--color-textMuted)' }}>
                 {item.shortcut}
               </span>
               <span className="flex justify-end">
@@ -1218,18 +1318,18 @@ function FileDropdown({
 
             {item.children && openSubmenu === item.id && (
               <div
-                className="absolute left-[calc(100%-4px)] top-0 z-50 w-[265px] rounded-[9px] py-2 text-[18px] shadow-2xl"
-                style={{ width: item.childWidth || 265, background: '#1f2020', border: '1px solid #303234', color: '#d7d7d7' }}
+                className="absolute left-[calc(100%-4px)] top-0 z-50 rounded-xl py-2 text-[13px] shadow-2xl"
+                style={{ width: item.childWidth || 265, background: '#150f2a', border: '1px solid rgba(167,139,250,0.2)', color: 'var(--color-text)' }}
               >
                 {item.children.map((child) => (
                   <button
                     key={child.id}
-                    className="grid h-[34px] w-full grid-cols-[22px_1fr] items-center px-3 text-left hover:bg-[#04395e]"
+                    className="grid h-[30px] w-full grid-cols-[22px_1fr] items-center px-3 text-left text-[13px] hover:bg-white/8 transition-colors"
                     onClick={() => onRun(child)}
                     disabled={child.disabled}
-                    style={{ color: child.disabled ? '#686868' : '#d7d7d7' }}
+                    style={{ color: child.disabled ? 'var(--color-textFaint)' : 'var(--color-text)' }}
                   >
-                    <span>{child.checked && <Check size={17} />}</span>
+                    <span>{child.checked && <Check size={14} style={{ color: 'var(--color-accent)' }} />}</span>
                     <span className="truncate">{child.label}</span>
                   </button>
                 ))}

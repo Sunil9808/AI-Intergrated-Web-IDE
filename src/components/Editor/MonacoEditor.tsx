@@ -10,9 +10,15 @@ import { aiService } from '../../services/aiService';
 import { v4 as uuidv4 } from '../../utils/uuid';
 import { ChatMessage } from '../../types/ai.types';
 import { ExtensionItem, supportsFormatting, supportsLanguage, useExtensionStore } from '../../store/extensionStore';
+import { getExtensionCompletionItems } from '../../services/extensionCompletionService';
+import { fetchInlineCompletion } from '../../services/inlineCompletionService';
+import { configureMonacoEditor } from '../../setup/monacoSetup';
+import { setMonacoInstance } from '../../services/extensionRuntime';
 
 let smartCompletionProvidersRegistered = false;
 let editorThemesRegistered = false;
+let inlineCompletionProviderRegistered = false;
+const EMPTY_EDITOR_BACKGROUND_IMAGE = 'https://img.freepik.com/premium-photo/elegant-dark-background-designs_1199394-20502.jpg';
 
 interface MonacoEditorProps {
   tabId: string;
@@ -51,10 +57,16 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
   const { theme } = useSettingsStore();
   const { addNotification, setActiveSidebarPanel, setSidebarVisible, setRightPanelVisible } = useUIStore();
 
-  const monacoTheme = theme === 'light' ? 'ai-web-ide-light-plus' : theme === 'high-contrast' ? 'hc-black' : 'ai-web-ide-dark-plus';
+  const monacoTheme = theme === 'light'
+    ? 'ai-web-ide-light-plus'
+    : theme === 'high-contrast'
+      ? 'hc-black'
+      : 'ai-web-ide-cursor-dark';
+  const showEmptyEditorBackground = filePath.startsWith('/untitled/') && content.trim().length === 0;
 
-  const handleBeforeMount = useCallback((monaco: typeof Monaco) => {
+  const handleBeforeMount = useCallback(async (monaco: typeof Monaco) => {
     registerEditorThemes(monaco);
+    await configureMonacoEditor(monaco);
   }, []);
 
   const handleMount: OnMount = useCallback((editor, monaco) => {
@@ -62,6 +74,11 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
     monacoRef.current = monaco;
     registerEditorThemes(monaco);
     registerSmartCompletionProviders(monaco);
+    registerInlineCompletionProvider(monaco);
+
+    // Wire Monaco into the extension runtime so linting, formatting,
+    // and theme services can use the real Monaco API
+    setMonacoInstance(monaco);
 
     // Set editor content
     editor.setValue(content);
@@ -76,17 +93,24 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
 
     editor.onDidChangeModelContent((event: Monaco.editor.IModelContentChangedEvent) => {
       const typedText = event.changes[0]?.text || '';
-      if (/^[A-Za-z_]$/.test(typedText)) {
+      if (/^[A-Za-z_]$/.test(typedText) || ['.', '<', '/', ':'].includes(typedText)) {
         window.setTimeout(() => {
           const model = editor.getModel();
           const position = editor.getPosition();
           if (!model || !position) return;
 
           const word = model.getWordUntilPosition(position);
-          if (word.word.length >= 1) {
+          if (word.word.length >= 1 || ['.', '<', '/', ':'].includes(typedText)) {
             editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
           }
         }, 0);
+      }
+
+      if (useAIStore.getState().settings.inlineCompletionsEnabled) {
+        const delay = useAIStore.getState().settings.inlineCompletionsDelay;
+        window.setTimeout(() => {
+          editor.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+        }, delay + 50);
       }
     });
 
@@ -122,24 +146,6 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
       run: () => {
         window.dispatchEvent(new CustomEvent('ai-web-ide:editor-command', { detail: 'ai-generate' }));
       },
-    });
-
-    // Configure TypeScript/JavaScript defaults
-    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-      target: monaco.languages.typescript.ScriptTarget.ES2020,
-      allowNonTsExtensions: true,
-      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-      module: monaco.languages.typescript.ModuleKind.CommonJS,
-      noEmit: true,
-      esModuleInterop: true,
-      jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
-      allowJs: true,
-      typeRoots: ['node_modules/@types'],
-    });
-
-    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
-      noSemanticValidation: false,
-      noSyntaxValidation: false,
     });
 
     // Format document on Shift+Alt+F
@@ -647,12 +653,20 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
         'last-edit-location': 'editor.action.goToLastEditLocation',
         'go-to-symbol': 'editor.action.quickOutline',
         'go-to-definition': 'editor.action.revealDefinition',
+        'peek-definition': 'editor.action.peekDefinition',
         'go-to-declaration': 'editor.action.goToDeclaration',
         'go-to-type-definition': 'editor.action.goToTypeDefinition',
         'go-to-implementation': 'editor.action.goToImplementation',
         'go-to-references': 'editor.action.goToReferences',
         'go-to-line': 'editor.action.gotoLine',
         'go-to-bracket': 'editor.action.jumpToBracket',
+        'rename-symbol': 'editor.action.rename',
+        'quick-fix': 'editor.action.quickFix',
+        'refactor': 'editor.action.refactor',
+        'source-action': 'editor.action.sourceAction',
+        'format-document': 'editor.action.formatDocument',
+        'fold-all': 'editor.foldAll',
+        'unfold-all': 'editor.unfoldAll',
         'next-problem': 'editor.action.marker.next',
         'previous-problem': 'editor.action.marker.prev',
       };
@@ -689,7 +703,15 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
   }, [content]);
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className={`relative h-full w-full ${showEmptyEditorBackground ? 'empty-monaco-background' : ''}`}
+      style={showEmptyEditorBackground ? {
+        backgroundImage: `url("${EMPTY_EDITOR_BACKGROUND_IMAGE}")`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      } : undefined}
+    >
       <MonacoEditorReact
         height="100%"
         language={language}
@@ -718,16 +740,33 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
         scrollBeyondLastLine: false,
         automaticLayout: true,
         formatOnPaste: settings.formatOnPaste,
+        formatOnType: true,
+        autoClosingBrackets: 'always',
+        autoClosingQuotes: 'always',
+        autoClosingOvertype: 'always',
+        autoSurround: 'languageDefined',
+        autoIndent: 'full',
+        matchBrackets: 'always',
+        tabCompletion: 'on',
+        colorDecorators: true,
+        linkedEditing: true,
+        renderValidationDecorations: 'on',
+        showUnused: true,
+        inlayHints: { enabled: settings.inlayHints ? 'onUnlessPressed' : 'off' },
+        unicodeHighlight: { ambiguousCharacters: true, invisibleCharacters: true },
         folding: true,
         foldingHighlight: true,
         showFoldingControls: 'mouseover',
-        bracketPairColorization: { enabled: true },
+        foldingStrategy: 'auto',
+        stickyScroll: { enabled: settings.stickyScroll },
+        bracketPairColorization: { enabled: settings.bracketPairColorization },
         'semanticHighlighting.enabled': true,
         guides: {
-          bracketPairs: true,
+          bracketPairs: settings.bracketPairColorization,
           indentation: true,
         },
         suggest: {
+          insertMode: 'replace',
           filterGraceful: true,
           localityBonus: true,
           matchOnWordStartOnly: false,
@@ -762,15 +801,25 @@ export default function MonacoEditor({ tabId, filePath, content, language, onCon
         suggestOnTriggerCharacters: true,
         acceptSuggestionOnCommitCharacter: true,
         acceptSuggestionOnEnter: 'on',
-        wordBasedSuggestions: 'currentDocument',
-        parameterHints: { enabled: true },
-        hover: { enabled: true },
+        wordBasedSuggestions: 'allDocuments',
+        inlineSuggest: {
+          enabled: useAIStore.getState().settings.inlineCompletionsEnabled,
+          mode: 'prefix',
+          showToolbar: 'onHover',
+        },
+        snippetSuggestions: 'top',
+        parameterHints: { enabled: settings.parameterHints, cycle: true },
+        hover: { enabled: true, delay: 300, sticky: true },
         contextmenu: false,
+        dragAndDrop: true,
+        links: true,
+        multiCursorMergeOverlapping: true,
+        multiCursorPaste: 'spread',
         mouseWheelZoom: true,
         renderLineHighlight: 'all',
         selectionHighlight: true,
         occurrencesHighlight: 'multiFile',
-        codeLens: true,
+        codeLens: settings.codeLens,
         lightbulb: { enabled: 'on' as 'on' },
         padding: { top: 8, bottom: 8 },
         scrollbar: {
@@ -825,15 +874,15 @@ function EditorContextMenu({
   setOpenSubmenu: (id: string | null) => void;
   onRun: (item: EditorContextMenuItem) => void;
 }) {
-  const width = 432;
-  const estimatedHeight = items.reduce((height, item) => height + (item.separator ? 17 : 36), 14);
+  const width = 320;
+  const estimatedHeight = items.reduce((height, item) => height + (item.separator ? 9 : 28), 10);
   const maxHeight = Math.min(window.innerHeight - 8, estimatedHeight);
   const left = Math.min(x, window.innerWidth - width - 8);
   const top = Math.min(y, window.innerHeight - maxHeight - 8);
 
   return (
     <div
-      className="fixed z-[100] overflow-visible rounded-[7px] py-[7px] text-[20px] shadow-2xl"
+      className="fixed z-[100] overflow-visible rounded-md py-1.5 text-[13px] shadow-2xl"
       style={{
         left,
         top: Math.max(4, top),
@@ -859,13 +908,13 @@ function EditorContextMenu({
             onMouseEnter={() => setOpenSubmenu(item.children ? item.id : null)}
           >
             <button
-              className="grid h-[36px] w-full grid-cols-[26px_minmax(0,1fr)_auto_20px] items-center px-[18px] text-left leading-none transition-colors hover:bg-[#04395e]"
+              className="grid h-7 w-full grid-cols-[18px_minmax(0,1fr)_auto_16px] items-center px-3 text-left leading-none transition-colors hover:bg-[#04395e]"
               style={{ color: '#cfcfcf' }}
               onClick={() => onRun(item)}
             >
               <span />
               <span className="truncate">{item.label}</span>
-              <span className="pl-5 text-right text-[20px]" style={{ color: '#9a9a9a' }}>
+              <span className="pl-4 text-right text-[12px]" style={{ color: '#9a9a9a' }}>
                 {item.shortcut}
               </span>
               <span className="flex justify-end" style={{ color: '#9a9a9a' }}>
@@ -875,13 +924,13 @@ function EditorContextMenu({
 
             {item.children && openSubmenu === item.id && (
               <div
-                className="absolute left-[calc(100%-4px)] top-0 z-[101] w-[280px] rounded-[7px] py-[7px] text-[18px] shadow-2xl"
+                className="absolute left-[calc(100%-4px)] top-0 z-[101] w-[250px] rounded-md py-1.5 text-[13px] shadow-2xl"
                 style={{ background: '#1f2020', border: '1px solid #303234', color: '#cfcfcf' }}
               >
                 {item.children.map((child) => (
                   <button
                     key={child.id}
-                    className="grid h-[34px] w-full grid-cols-[18px_minmax(0,1fr)_auto] items-center px-3 text-left hover:bg-[#04395e]"
+                    className="grid h-7 w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center px-3 text-left hover:bg-[#04395e]"
                     onClick={() => onRun(child)}
                   >
                     <span />
@@ -901,6 +950,63 @@ function EditorContextMenu({
 function registerEditorThemes(monaco: typeof Monaco) {
   if (editorThemesRegistered) return;
   editorThemesRegistered = true;
+
+  monaco.editor.defineTheme('ai-web-ide-cursor-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: '', foreground: 'EEFFFF', fontStyle: '' },
+      { token: 'comment', foreground: '676E95', fontStyle: 'italic' },
+      { token: 'comment.doc', foreground: '676E95', fontStyle: 'italic' },
+      { token: 'keyword', foreground: 'C792EA' },
+      { token: 'keyword.control', foreground: 'C792EA' },
+      { token: 'keyword.operator', foreground: '89DDFF' },
+      { token: 'operator', foreground: '89DDFF' },
+      { token: 'string', foreground: 'C3E88D' },
+      { token: 'string.escape', foreground: 'C3E88D' },
+      { token: 'number', foreground: 'F78C6C' },
+      { token: 'regexp', foreground: 'F78C6C' },
+      { token: 'type', foreground: 'FFCB6B' },
+      { token: 'type.identifier', foreground: 'FFCB6B' },
+      { token: 'class', foreground: 'FFCB6B' },
+      { token: 'interface', foreground: 'FFCB6B' },
+      { token: 'identifier', foreground: 'EEFFFF' },
+      { token: 'variable', foreground: 'EEFFFF' },
+      { token: 'variable.predefined', foreground: '82AAFF' },
+      { token: 'variable.parameter', foreground: 'EEFFFF' },
+      { token: 'function', foreground: '82AAFF' },
+      { token: 'method', foreground: '82AAFF' },
+      { token: 'delimiter', foreground: '89DDFF' },
+      { token: 'tag', foreground: 'F07178' },
+      { token: 'attribute.name', foreground: 'C792EA' },
+      { token: 'attribute.value', foreground: 'C3E88D' },
+      { token: 'metatag', foreground: 'FF5370' },
+      { token: 'constant', foreground: 'F78C6C' },
+      { token: 'namespace', foreground: 'FFCB6B' },
+    ],
+    colors: {
+      'editor.background': '#181818',
+      'editor.foreground': '#eeffff',
+      'editorLineNumber.foreground': '#4b4b4b',
+      'editorLineNumber.activeForeground': '#c6c6c6',
+      'editorCursor.foreground': '#aeafad',
+      'editor.selectionBackground': '#3e4451',
+      'editor.inactiveSelectionBackground': '#3a3d41',
+      'editor.lineHighlightBackground': '#1f1f1f',
+      'editor.lineHighlightBorder': '#1f1f1f',
+      'editorIndentGuide.background1': '#2f2f2f',
+      'editorIndentGuide.activeBackground1': '#5a5a5a',
+      'editorSuggestWidget.background': '#1e1e1e',
+      'editorSuggestWidget.border': '#2d2d2d',
+      'editorSuggestWidget.foreground': '#d4d4d4',
+      'editorSuggestWidget.highlightForeground': '#82aaff',
+      'editorSuggestWidget.selectedBackground': '#2c313a',
+      'editorGhostText.foreground': '#6a737d',
+      'editorGhostText.background': '#181818',
+      'editorBracketMatch.background': '#3e4451',
+      'editorBracketMatch.border': '#89ddff',
+    },
+  });
 
   monaco.editor.defineTheme('ai-web-ide-dark-plus', {
     base: 'vs-dark',
@@ -994,6 +1100,80 @@ function registerEditorThemes(monaco: typeof Monaco) {
   });
 }
 
+function registerInlineCompletionProvider(monaco: typeof Monaco) {
+  if (inlineCompletionProviderRegistered) return;
+  inlineCompletionProviderRegistered = true;
+
+  const languages = [
+    'javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'jsx', 'tsx',
+    'python', 'java', 'cpp', 'c', 'csharp', 'go', 'rust', 'php', 'ruby', 'swift', 'kotlin',
+    'html', 'css', 'scss', 'json', 'yaml', 'markdown', 'shell', 'sql', 'plaintext',
+  ];
+
+  languages.forEach((languageId) => {
+    monaco.languages.registerInlineCompletionsProvider(languageId, {
+      provideInlineCompletions: async (model, position, _context, token) => {
+        const aiSettings = useAIStore.getState().settings;
+        if (!aiSettings.inlineCompletionsEnabled) {
+          return { items: [] };
+        }
+
+        const prefix = model.getValueInRange({
+          startLineNumber: 1,
+          startColumn: 1,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column,
+        });
+        const suffix = model.getValueInRange({
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: model.getLineCount(),
+          endColumn: model.getLineContent(model.getLineCount()).length + 1,
+        });
+
+        if (prefix.trim().length < 2) {
+          return { items: [] };
+        }
+
+        const activeTab = useEditorStore.getState().getActiveTab();
+        const completion = await fetchInlineCompletion(
+          prefix,
+          suffix,
+          model.getLanguageId(),
+          {
+            currentFile: activeTab ? {
+              path: activeTab.filePath,
+              content: model.getValue(),
+              language: model.getLanguageId(),
+              name: activeTab.fileName,
+            } : undefined,
+            workspaceName: 'my-project',
+          },
+          aiSettings.inlineCompletionsDelay
+        );
+
+        if (!completion || token.isCancellationRequested) {
+          return { items: [] };
+        }
+
+        return {
+          items: [{
+            insertText: completion,
+            range: new monaco.Range(
+              position.lineNumber,
+              position.column,
+              position.lineNumber,
+              position.column
+            ),
+          }],
+          enableForwardStability: true,
+        };
+      },
+      freeInlineCompletions: () => {},
+    });
+  });
+}
+
 function registerSmartCompletionProviders(monaco: typeof Monaco) {
   if (smartCompletionProvidersRegistered) return;
   smartCompletionProvidersRegistered = true;
@@ -1001,6 +1181,10 @@ function registerSmartCompletionProviders(monaco: typeof Monaco) {
   const languages = [
     'javascript',
     'typescript',
+    'javascriptreact',
+    'typescriptreact',
+    'jsx',
+    'tsx',
     'python',
     'java',
     'cpp',
@@ -1038,7 +1222,13 @@ function registerSmartCompletionProviders(monaco: typeof Monaco) {
 
         const languageSuggestions = getLanguageCompletionItems(monaco, model.getLanguageId(), range);
         const documentSuggestions = getDocumentWordCompletionItems(monaco, model, range);
-        const suggestions = [...languageSuggestions, ...documentSuggestions]
+        const extensionSuggestions = getExtensionCompletionItems(
+          monaco,
+          useExtensionStore.getState().installed,
+          model.getLanguageId(),
+          range
+        );
+        const suggestions = [...languageSuggestions, ...extensionSuggestions, ...documentSuggestions]
           .filter((suggestion) => {
             const label = String(suggestion.label).toLowerCase();
             return !prefix || label.includes(prefix);
@@ -1080,7 +1270,14 @@ function getLanguageCompletionItems(
     range,
   });
 
-  const common = ['TODO', 'FIXME', 'class', 'console', 'export', 'false', 'function', 'import', 'length', 'let', 'line', 'list', 'local', 'log', 'loop', 'return', 'true', 'value'].map(keyword);
+  const common = ['TODO', 'FIXME', 'class', 'console', 'const', 'export', 'false', 'function', 'import', 'length', 'let', 'line', 'list', 'local', 'log', 'loop', 'return', 'true', 'value'].map(keyword);
+  const reactItems = [
+    ...['children', 'className', 'disabled', 'export', 'Fragment', 'import', 'key', 'onChange', 'onClick', 'props', 'React', 'return', 'style', 'useCallback', 'useEffect', 'useMemo', 'useRef', 'useState'].map(keyword),
+    snippet('component', 'export default function ${1:Component}() {\n\treturn (\n\t\t${0:<div />}\n\t);\n}', 'React component'),
+    snippet('useEffect', 'useEffect(() => {\n\t${0}\n}, [${1}]);', 'React effect'),
+    snippet('useState', 'const [${1:value}, set${2:Value}] = useState(${3:null});', 'React state'),
+    snippet('map', '{${1:items}.map((${2:item}) => (\n\t${0:<div key={${2:item}.id} />}\n))}', 'Render list'),
+  ];
   const items: Record<string, Monaco.languages.CompletionItem[]> = {
     python: [
       ...['and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'elif', 'else', 'except', 'False', 'finally', 'for', 'from', 'if', 'import', 'in', 'is', 'lambda', 'None', 'not', 'or', 'pass', 'raise', 'return', 'True', 'try', 'while', 'with', 'yield', 'print', 'len', 'range', 'list', 'dict', 'set', 'tuple', 'str', 'int', 'float', 'input'].map(keyword),
@@ -1101,6 +1298,10 @@ function getLanguageCompletionItems(
       snippet('type', 'type ${1:Name} = ${0};', 'TypeScript type alias'),
       snippet('component', 'function ${1:Component}() {\n\treturn ${0:null};\n}', 'React component'),
     ],
+    javascriptreact: reactItems,
+    typescriptreact: reactItems,
+    jsx: reactItems,
+    tsx: reactItems,
     java: [
       ...['abstract', 'boolean', 'break', 'case', 'catch', 'class', 'continue', 'double', 'else', 'extends', 'final', 'finally', 'for', 'if', 'implements', 'import', 'int', 'interface', 'new', 'private', 'protected', 'public', 'return', 'static', 'String', 'this', 'throw', 'try', 'void', 'while'].map(keyword),
       snippet('main', 'public static void main(String[] args) {\n\t${0}\n}', 'Java main method'),

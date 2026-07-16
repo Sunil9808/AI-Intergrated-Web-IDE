@@ -12,6 +12,7 @@ interface EditorStore {
   closeTab: (tabId: string) => void;
   closeAllTabs: () => void;
   setActiveTab: (tabId: string) => void;
+  updateTabFile: (tabId: string, file: Partial<Pick<EditorTab, 'fileId' | 'filePath' | 'fileName' | 'language'>>) => void;
   updateTabContent: (tabId: string, content: string) => void;
   markTabDirty: (tabId: string, isDirty: boolean) => void;
   saveTab: (tabId: string) => void;
@@ -36,6 +37,11 @@ const defaultSettings: EditorSettings = {
   insertSpaces: true,
   wordWrap: 'off',
   minimap: true,
+  stickyScroll: true,
+  bracketPairColorization: true,
+  codeLens: true,
+  inlayHints: true,
+  parameterHints: true,
   lineNumbers: 'on',
   formatOnSave: true,
   formatOnPaste: false,
@@ -46,9 +52,27 @@ const defaultSettings: EditorSettings = {
   renderWhitespace: 'selection',
 };
 
+function createEmptyTab(): EditorTab {
+  const timestamp = Date.now();
+  const id = `tab-untitled-${timestamp}`;
+  return {
+    id,
+    fileId: `untitled-${timestamp}`,
+    filePath: '/untitled/Untitled-1',
+    fileName: 'Untitled-1',
+    language: 'plaintext',
+    content: '',
+    isDirty: false,
+    isPreview: false,
+    cursorPosition: { line: 1, column: 1 },
+  };
+}
+
+const initialTab = createEmptyTab();
+
 export const useEditorStore = create<EditorStore>((set, get) => ({
-  tabs: [],
-  activeTabId: null,
+  tabs: [initialTab],
+  activeTabId: initialTab.id,
   splitConfig: { enabled: false, direction: 'horizontal', ratio: 0.5 },
   settings: defaultSettings,
 
@@ -76,21 +100,30 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((state) => {
       const idx = state.tabs.findIndex((t) => t.id === tabId);
       const newTabs = state.tabs.filter((t) => t.id !== tabId);
+      if (newTabs.length === 0) {
+        const emptyTab = createEmptyTab();
+        return { tabs: [emptyTab], activeTabId: emptyTab.id };
+      }
       let newActiveId = state.activeTabId;
       if (state.activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          newActiveId = newTabs[Math.max(0, idx - 1)]?.id || newTabs[0].id;
-        } else {
-          newActiveId = null;
-        }
+        newActiveId = newTabs[Math.max(0, idx - 1)]?.id || newTabs[0].id;
       }
       return { tabs: newTabs, activeTabId: newActiveId };
     });
   },
 
-  closeAllTabs: () => set({ tabs: [], activeTabId: null }),
+  closeAllTabs: () => {
+    const emptyTab = createEmptyTab();
+    set({ tabs: [emptyTab], activeTabId: emptyTab.id });
+  },
 
   setActiveTab: (tabId) => set({ activeTabId: tabId }),
+
+  updateTabFile: (tabId, file) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ...file } : t)),
+    }));
+  },
 
   updateTabContent: (tabId, content) => {
     set((state) => ({

@@ -7,12 +7,15 @@ import BottomPanel from '../components/BottomPanel/BottomPanel';
 import StatusBar from '../components/StatusBar/StatusBar';
 import CommandPalette from '../components/Editor/CommandPalette';
 import AIChatPanel from '../components/Sidebar/AIChat/AIChatPanel';
+import CopyrightSafetyDialog from '../components/Common/CopyrightSafetyDialog';
 import { Sparkles } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
 import { useFileStore } from '../store/fileStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { useEditorStore } from '../store/editorStore';
 import { terminalService } from '../services/terminalService';
 import { useTerminalStore } from '../store/terminalStore';
+import { initializeExtensionRuntime } from '../services/extensionRuntime';
 
 export default function WorkspaceLayout() {
   const {
@@ -27,16 +30,31 @@ export default function WorkspaceLayout() {
   const { setFileTree } = useFileStore();
   const { setWorkspace } = useWorkspaceStore();
   const { addSession } = useTerminalStore();
+  const { closeAllTabs } = useEditorStore();
 
   const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
   const [isDraggingBottom, setIsDraggingBottom] = useState(false);
   const [isDraggingRight, setIsDraggingRight] = useState(false);
+  const [copyrightDialogOpen, setCopyrightDialogOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Initialize the IDE shell without opening a project.
   useEffect(() => {
+    // If opened as a new clean window, clear all tabs
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('clean') === '1') {
+      closeAllTabs();
+      // Remove the flag from the URL without reloading
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('clean');
+      window.history.replaceState({}, '', cleanUrl.pathname + (cleanUrl.search !== '?' ? cleanUrl.search : ''));
+    }
+
     setWorkspace(null);
     setFileTree([]);
+
+    // Initialize extension runtime (themes, linting, formatting, commands)
+    const cleanupRuntime = initializeExtensionRuntime();
 
     // Connect terminal service
     terminalService.connect();
@@ -45,8 +63,15 @@ export default function WorkspaceLayout() {
     });
 
     return () => {
+      cleanupRuntime();
       terminalService.disconnect();
     };
+  }, []);
+
+  useEffect(() => {
+    const openCopyrightDialog = () => setCopyrightDialogOpen(true);
+    window.addEventListener('ai-web-ide:open-copyright-safety', openCopyrightDialog);
+    return () => window.removeEventListener('ai-web-ide:open-copyright-safety', openCopyrightDialog);
   }, []);
 
   // Sidebar resize
@@ -58,7 +83,7 @@ export default function WorkspaceLayout() {
 
     const onMouseMove = (e: MouseEvent) => {
       const delta = e.clientX - startX;
-      const newWidth = Math.max(300, Math.min(600, startWidth + delta));
+      const newWidth = Math.max(180, Math.min(360, startWidth + delta));
       setSidebarWidth(newWidth);
     };
 
@@ -134,7 +159,7 @@ export default function WorkspaceLayout() {
         {/* Sidebar */}
         {sidebarVisible && (
           <>
-            <div style={{ width: sidebarWidth, minWidth: 300, maxWidth: 600, flexShrink: 0, background: 'var(--color-sidebar)', borderRight: '1px solid var(--color-border)', overflow: 'hidden' }}>
+            <div style={{ width: sidebarWidth, minWidth: 180, maxWidth: 360, flexShrink: 0, background: 'var(--color-sidebar)', borderRight: '1px solid var(--color-border)', overflow: 'hidden' }}>
               <Sidebar />
             </div>
             {/* Sidebar resize handle */}
@@ -211,6 +236,10 @@ export default function WorkspaceLayout() {
 
       {/* Command Palette Overlay */}
       {commandPaletteOpen && <CommandPalette />}
+
+      {copyrightDialogOpen && (
+        <CopyrightSafetyDialog onClose={() => setCopyrightDialogOpen(false)} />
+      )}
     </div>
   );
 }

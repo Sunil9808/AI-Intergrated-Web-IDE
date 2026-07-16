@@ -50,6 +50,11 @@ export interface EditorSettings {
   insertSpaces: boolean;
   wordWrap: 'off' | 'on' | 'wordWrapColumn' | 'bounded';
   minimap: boolean;
+  stickyScroll: boolean;
+  bracketPairColorization: boolean;
+  codeLens: boolean;
+  inlayHints: boolean;
+  parameterHints: boolean;
   lineNumbers: 'on' | 'off' | 'relative';
   formatOnSave: boolean;
   formatOnPaste: boolean;

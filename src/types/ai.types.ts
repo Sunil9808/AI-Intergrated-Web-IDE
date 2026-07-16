@@ -98,4 +98,6 @@ export interface AISettings {
   streamResponses: boolean;
   includeFileContext: boolean;
   includeWorkspaceContext: boolean;
+  inlineCompletionsEnabled: boolean;
+  inlineCompletionsDelay: number;
 }

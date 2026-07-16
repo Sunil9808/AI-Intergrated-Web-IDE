@@ -83,8 +83,8 @@ interface Notification {
 
 export const useUIStore = create<UIStore>((set) => ({
   activityBarVisible: true,
-  sidebarVisible: false,
-  sidebarWidth: 448,
+  sidebarVisible: true,
+  sidebarWidth: 240,
   activeSidebarPanel: 'explorer',
   
   bottomPanelVisible: false,
@@ -92,7 +92,7 @@ export const useUIStore = create<UIStore>((set) => ({
   activeBottomPanel: 'terminal',
   
   rightPanelVisible: true,
-  rightPanelWidth: 430,
+  rightPanelWidth: 360,
 
   statusBarVisible: true,
   centeredLayout: false,

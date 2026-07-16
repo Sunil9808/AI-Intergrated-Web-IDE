@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Search, File, Settings, Terminal, Bot, GitBranch, X } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { Search, File, Settings, Terminal, Bot, GitBranch, X, Puzzle, Palette, Code2, Wrench } from 'lucide-react';
 import { useUIStore } from '../../store/uiStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useFileStore } from '../../store/fileStore';
@@ -7,6 +7,11 @@ import { getLanguageFromExtension } from '../../utils/fileHelpers';
 import { fileService } from '../../services/fileService';
 import { browserFileCache } from '../../services/browserFileCache';
 import { FileNode } from '../../types/file.types';
+import {
+  getRegisteredCommands,
+  onCommandsChanged,
+  ExtensionCommand,
+} from '../../services/extensionRuntime';
 
 interface Command {
   id: string;
@@ -17,10 +22,32 @@ interface Command {
   category: string;
 }
 
+const CATEGORY_ICONS: Record<string, React.ReactNode> = {
+  Theme: <Palette size={13} />,
+  Formatting: <Code2 size={13} />,
+  Linting: <Wrench size={13} />,
+  Language: <Code2 size={13} />,
+  Extensions: <Puzzle size={13} />,
+  Git: <GitBranch size={13} />,
+  View: <File size={13} />,
+  Terminal: <Terminal size={13} />,
+  Preferences: <Settings size={13} />,
+  AI: <Bot size={13} />,
+  Files: <File size={13} />,
+};
+
 export default function CommandPalette() {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const { setCommandPaletteOpen, setActiveSidebarPanel, toggleBottomPanel, addNotification, setRightPanelVisible } = useUIStore();
+  const [extensionCommands, setExtensionCommands] = useState<ExtensionCommand[]>(() => getRegisteredCommands());
+  const {
+    setCommandPaletteOpen,
+    setActiveSidebarPanel,
+    setBottomPanelVisible,
+    setActiveBottomPanel,
+    addNotification,
+    setRightPanelVisible,
+  } = useUIStore();
   const { openTab } = useEditorStore();
   const { fileTree } = useFileStore();
 
@@ -33,6 +60,14 @@ export default function CommandPalette() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // Subscribe to extension command changes
+  useEffect(() => {
+    const unsubscribe = onCommandsChanged(() => {
+      setExtensionCommands(getRegisteredCommands());
+    });
+    return unsubscribe;
+  }, []);
+
   const flattenFiles = (nodes: typeof fileTree): typeof fileTree => {
     const result: typeof fileTree = [];
     for (const node of nodes) {
@@ -43,45 +78,93 @@ export default function CommandPalette() {
   };
 
   const allFiles = flattenFiles(fileTree);
+  const runEditorCommand = (command: string) => {
+    window.dispatchEvent(new CustomEvent('ai-web-ide:editor-command', { detail: command }));
+    setCommandPaletteOpen(false);
+  };
 
-  const commands: Command[] = [
+  const builtInCommands: Command[] = [
     {
       id: 'explorer', label: 'View: Show Explorer', category: 'View',
-      icon: <File size={14} />,
+      icon: <File size={13} />,
       action: () => { setActiveSidebarPanel('explorer'); setCommandPaletteOpen(false); },
     },
     {
       id: 'search', label: 'View: Show Search', category: 'View',
-      icon: <Search size={14} />,
+      icon: <Search size={13} />,
       action: () => { setActiveSidebarPanel('search'); setCommandPaletteOpen(false); },
     },
     {
+      id: 'extensions', label: 'View: Show Extensions', category: 'View',
+      icon: <Puzzle size={13} />,
+      action: () => { setActiveSidebarPanel('extensions'); setCommandPaletteOpen(false); },
+    },
+    {
       id: 'terminal', label: 'Terminal: Create New Terminal', category: 'Terminal',
-      icon: <Terminal size={14} />,
-      action: () => { toggleBottomPanel(); setCommandPaletteOpen(false); },
+      icon: <Terminal size={13} />,
+      action: () => {
+        setActiveBottomPanel('terminal');
+        setBottomPanelVisible(true);
+        window.dispatchEvent(new CustomEvent('ai-web-ide:terminal-command', { detail: { action: 'new' } }));
+        setCommandPaletteOpen(false);
+      },
     },
     {
       id: 'ai', label: 'AI: Open Pair Programmer', category: 'AI',
-      icon: <Bot size={14} />,
+      icon: <Bot size={13} />,
       action: () => { setRightPanelVisible(true); setCommandPaletteOpen(false); },
     },
     {
       id: 'git', label: 'View: Show Source Control', category: 'View',
-      icon: <GitBranch size={14} />,
+      icon: <GitBranch size={13} />,
       action: () => { setActiveSidebarPanel('git'); setCommandPaletteOpen(false); },
     },
     {
       id: 'settings', label: 'Preferences: Open Settings', category: 'Preferences',
-      icon: <Settings size={14} />,
-      action: () => { addNotification({ type: 'info', message: 'Settings panel coming soon!' }); setCommandPaletteOpen(false); },
+      icon: <Settings size={13} />,
+      action: () => {
+        openTab({
+          id: 'tab-ide-settings',
+          fileId: 'ide-settings',
+          filePath: '/settings/ide',
+          fileName: 'Settings',
+          language: 'ide-settings',
+          content: '',
+          isDirty: false,
+          isPreview: false,
+          cursorPosition: { line: 1, column: 1 },
+        });
+        setCommandPaletteOpen(false);
+      },
     },
+    { id: 'find', label: 'Edit: Find', category: 'Editor', icon: <Search size={13} />, action: () => runEditorCommand('find') },
+    { id: 'replace', label: 'Edit: Replace', category: 'Editor', icon: <Search size={13} />, action: () => runEditorCommand('replace') },
+    { id: 'go-line', label: 'Go: Go to Line/Column', category: 'Navigation', icon: <Code2 size={13} />, action: () => runEditorCommand('go-to-line') },
+    { id: 'go-symbol', label: 'Go: Go to Symbol in Editor', category: 'Navigation', icon: <Code2 size={13} />, action: () => runEditorCommand('go-to-symbol') },
+    { id: 'go-definition', label: 'Go: Go to Definition', category: 'Navigation', icon: <Code2 size={13} />, action: () => runEditorCommand('go-to-definition') },
+    { id: 'peek-definition', label: 'Go: Peek Definition', category: 'Navigation', icon: <Code2 size={13} />, action: () => runEditorCommand('peek-definition') },
+    { id: 'references', label: 'Go: Find References', category: 'Navigation', icon: <Code2 size={13} />, action: () => runEditorCommand('go-to-references') },
+    { id: 'implementation', label: 'Go: Go to Implementation', category: 'Navigation', icon: <Code2 size={13} />, action: () => runEditorCommand('go-to-implementation') },
+    { id: 'rename', label: 'Refactor: Rename Symbol', category: 'Refactoring', icon: <Wrench size={13} />, action: () => runEditorCommand('rename-symbol') },
+    { id: 'quick-fix', label: 'Refactor: Quick Fix', category: 'Refactoring', icon: <Wrench size={13} />, action: () => runEditorCommand('quick-fix') },
+    { id: 'refactor', label: 'Refactor: Refactor...', category: 'Refactoring', icon: <Wrench size={13} />, action: () => runEditorCommand('refactor') },
+    { id: 'source-action', label: 'Refactor: Source Action...', category: 'Refactoring', icon: <Wrench size={13} />, action: () => runEditorCommand('source-action') },
+    { id: 'format-document', label: 'Format: Format Document', category: 'Formatting', icon: <Code2 size={13} />, action: () => runEditorCommand('format-document') },
+    { id: 'fold-all', label: 'View: Fold All', category: 'Editor', icon: <Code2 size={13} />, action: () => runEditorCommand('fold-all') },
+    { id: 'unfold-all', label: 'View: Unfold All', category: 'Editor', icon: <Code2 size={13} />, action: () => runEditorCommand('unfold-all') },
+    { id: 'next-problem', label: 'Problems: Go to Next Problem', category: 'Diagnostics', icon: <Wrench size={13} />, action: () => runEditorCommand('next-problem') },
+    { id: 'previous-problem', label: 'Problems: Go to Previous Problem', category: 'Diagnostics', icon: <Wrench size={13} />, action: () => runEditorCommand('previous-problem') },
+    { id: 'toggle-breakpoint', label: 'Debug: Toggle Breakpoint', category: 'Debug', icon: <Code2 size={13} />, action: () => runEditorCommand('toggle-breakpoint') },
+    { id: 'run-selected-text', label: 'Terminal: Run Selected Text', category: 'Terminal', icon: <Terminal size={13} />, action: () => runEditorCommand('run-selected-text') },
+    { id: 'ai-explain', label: 'AI: Explain Selection or File', category: 'AI', icon: <Bot size={13} />, action: () => runEditorCommand('ai-explain') },
+    { id: 'ai-generate', label: 'AI: Generate Code', category: 'AI', icon: <Bot size={13} />, action: () => runEditorCommand('ai-generate') },
     // File commands
-    ...allFiles.map(file => ({
+    ...allFiles.map((file) => ({
       id: `file-${file.id}`,
       label: file.name,
       description: file.path,
       category: 'Files',
-      icon: <File size={14} />,
+      icon: <File size={13} />,
       action: async () => {
         const language = getLanguageFromExtension(file.name);
         const content = await readFileContent(file, language);
@@ -101,84 +184,152 @@ export default function CommandPalette() {
     })),
   ];
 
-  const filtered = query
-    ? commands.filter(c =>
-        c.label.toLowerCase().includes(query.toLowerCase()) ||
-        c.description?.toLowerCase().includes(query.toLowerCase()) ||
-        c.category.toLowerCase().includes(query.toLowerCase())
-      )
-    : commands.slice(0, 10);
+  // Convert extension commands to Command shape
+  const extCommands: Command[] = useMemo(() => extensionCommands.map((cmd) => ({
+    id: `ext-${cmd.id}`,
+    label: cmd.label,
+    description: `from ${cmd.extensionName}`,
+    category: cmd.category,
+    icon: CATEGORY_ICONS[cmd.category] ?? <Puzzle size={13} />,
+    action: () => {
+      cmd.action();
+      setCommandPaletteOpen(false);
+    },
+  })), [extensionCommands]);
+
+  const allCommands = [...builtInCommands, ...extCommands];
+
+  const filtered = useMemo(() => {
+    if (!query) return allCommands.slice(0, 12);
+    const q = query.toLowerCase();
+    return allCommands.filter((c) =>
+      c.label.toLowerCase().includes(q) ||
+      c.description?.toLowerCase().includes(q) ||
+      c.category.toLowerCase().includes(q)
+    ).slice(0, 20);
+  }, [query, allCommands]);
+
+  // Group by category when no query
+  const grouped = useMemo(() => {
+    if (query) return null;
+    const groups: Record<string, Command[]> = {};
+    for (const cmd of filtered) {
+      if (!groups[cmd.category]) groups[cmd.category] = [];
+      groups[cmd.category].push(cmd);
+    }
+    return groups;
+  }, [query, filtered]);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-20"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
+      className="fixed inset-0 z-50 flex items-start justify-center pt-16"
+      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)' }}
       onClick={() => setCommandPaletteOpen(false)}
     >
       <div
-        className="w-full max-w-lg rounded-lg overflow-hidden shadow-2xl"
+        className="w-full max-w-[580px] rounded-xl overflow-hidden shadow-2xl slide-down"
         style={{
-          background: '#252526',
-          border: '1px solid var(--color-border)',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+          background: '#1a1d1f',
+          border: '1px solid #2f3235',
+          boxShadow: '0 24px 64px rgba(0,0,0,0.8)',
+          fontFamily: "'Inter', system-ui, sans-serif",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search input */}
-        <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: 'var(--color-border)' }}>
-          <Search size={16} style={{ color: 'var(--color-textMuted)', flexShrink: 0 }} />
+        <div
+          className="flex items-center gap-2.5 px-4 py-3 border-b"
+          style={{ borderColor: '#2f3235' }}
+        >
+          <Search size={15} style={{ color: '#555', flexShrink: 0 }} />
           <input
             ref={inputRef}
-            className="flex-1 bg-transparent outline-none text-sm"
+            className="flex-1 bg-transparent outline-none text-[13px]"
             style={{ color: 'var(--color-text)' }}
             placeholder="Type a command or search files..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          {query && (
-            <button onClick={() => setQuery('')} style={{ color: 'var(--color-textMuted)' }}>
-              <X size={14} />
-            </button>
-          )}
-          <kbd className="text-xxs px-1.5 py-0.5 rounded" style={{ background: 'var(--color-input)', color: 'var(--color-textMuted)', border: '1px solid var(--color-border)' }}>
-            ESC
-          </kbd>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {query && (
+              <button onClick={() => setQuery('')} style={{ color: '#555' }}>
+                <X size={13} />
+              </button>
+            )}
+            <kbd
+              className="px-1.5 py-0.5 rounded text-[10px]"
+              style={{ background: '#252829', color: '#555', border: '1px solid #333', fontFamily: 'inherit' }}
+            >
+              ESC
+            </kbd>
+          </div>
         </div>
 
         {/* Results */}
-        <div className="max-h-80 overflow-y-auto py-1">
+        <div className="max-h-[360px] overflow-y-auto py-1">
           {filtered.length === 0 ? (
-            <div className="px-4 py-6 text-center text-sm" style={{ color: 'var(--color-textMuted)' }}>
-              No results found for "{query}"
+            <div className="px-4 py-8 text-center text-[12px]" style={{ color: '#555' }}>
+              No results for "{query}"
             </div>
-          ) : (
-            filtered.map((cmd) => (
-              <button
-                key={cmd.id}
-                className="w-full flex items-center gap-3 px-4 py-2 text-left hover:bg-white/10 transition-colors"
-                onClick={() => void cmd.action()}
-              >
-                <span style={{ color: 'var(--color-textMuted)' }}>{cmd.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs" style={{ color: 'var(--color-text)' }}>{cmd.label}</div>
-                  {cmd.description && (
-                    <div className="text-xxs truncate" style={{ color: 'var(--color-textMuted)' }}>{cmd.description}</div>
-                  )}
+          ) : grouped ? (
+            Object.entries(grouped).map(([cat, cmds]) => (
+              <div key={cat}>
+                <div
+                  className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest"
+                  style={{ color: '#444', letterSpacing: '0.1em' }}
+                >
+                  {cat}
                 </div>
-                <span className="text-xxs flex-shrink-0" style={{ color: 'var(--color-textMuted)' }}>{cmd.category}</span>
-              </button>
+                {cmds.map((cmd) => <CommandRow key={cmd.id} cmd={cmd} />)}
+              </div>
             ))
+          ) : (
+            filtered.map((cmd) => <CommandRow key={cmd.id} cmd={cmd} />)
           )}
+        </div>
+
+        {/* Footer hint */}
+        <div
+          className="flex items-center justify-between px-4 py-2 border-t text-[10px]"
+          style={{ borderColor: '#252829', color: '#3a3d40' }}
+        >
+          <span>↑↓ Navigate</span>
+          <span>⏎ Run</span>
+          <span>Esc Close</span>
         </div>
       </div>
     </div>
   );
 }
 
+function CommandRow({ cmd }: { cmd: Command }) {
+  return (
+    <button
+      className="w-full flex items-center gap-3 px-4 py-2 text-left hover:bg-white/[0.05] transition-colors group"
+      onClick={() => void cmd.action()}
+    >
+      <span style={{ color: '#555', flexShrink: 0 }} className="group-hover:text-[var(--color-accent)] transition-colors">
+        {cmd.icon}
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="text-[12px]" style={{ color: 'var(--color-text)' }}>{cmd.label}</div>
+        {cmd.description && (
+          <div className="text-[10px] truncate mt-0.5" style={{ color: '#444' }}>{cmd.description}</div>
+        )}
+      </div>
+      <span
+        className="text-[10px] flex-shrink-0 px-1.5 py-0.5 rounded"
+        style={{ background: '#252829', color: '#444', fontFamily: "'Inter', system-ui, sans-serif" }}
+      >
+        {cmd.category}
+      </span>
+    </button>
+  );
+}
+
 async function readFileContent(file: FileNode, language: string) {
   const browserContent = await browserFileCache.read(file.path);
   if (browserContent !== null) return browserContent;
-
   try {
     const result = await fileService.readFile(file.path);
     return result.content;

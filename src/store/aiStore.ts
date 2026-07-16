@@ -30,6 +30,8 @@ const defaultSettings: AISettings = {
   streamResponses: true,
   includeFileContext: true,
   includeWorkspaceContext: true,
+  inlineCompletionsEnabled: true,
+  inlineCompletionsDelay: 400,
 };
 
 export const useAIStore = create<AIStore>((set) => ({

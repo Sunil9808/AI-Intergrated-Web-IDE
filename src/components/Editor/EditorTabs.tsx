@@ -1,6 +1,6 @@
 import { X, Circle } from 'lucide-react';
 import { useEditorStore } from '../../store/editorStore';
-import { getFileIcon } from '../../utils/fileHelpers';
+import FileTypeIcon from '../Icons/FileTypeIcon';
 
 export default function EditorTabs() {
   const { tabs, activeTabId, setActiveTab, closeTab } = useEditorStore();
@@ -34,9 +34,7 @@ export default function EditorTabs() {
             onClick={() => setActiveTab(tab.id)}
           >
             {/* File icon */}
-            <span className="text-sm flex-shrink-0">
-              {getFileIcon(tab.fileName)}
-            </span>
+            <FileTypeIcon filename={tab.fileName} size={14} className="flex-shrink-0" />
 
             {/* File name */}
             <span className="text-xs truncate flex-1">

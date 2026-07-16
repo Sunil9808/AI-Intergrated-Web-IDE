@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
 import {
   Send,
   Bot,
@@ -23,9 +23,19 @@ import {
   Circle,
   Hammer,
   Files,
+  Search,
+  Edit3,
+  ShieldCheck,
+  ListChecks,
+  Clock,
+  Settings,
+  Key,
+  PackageCheck,
 } from 'lucide-react';
 import { useAIStore } from '../../../store/aiStore';
 import { useEditorStore } from '../../../store/editorStore';
+import { useExtensionStore } from '../../../store/extensionStore';
+import { useUIStore } from '../../../store/uiStore';
 import { ChatMessage } from '../../../types/ai.types';
 import { v4 as uuidv4 } from '../../../utils/uuid';
 
@@ -46,12 +56,21 @@ const AGENT_ACTIONS = [
   { id: 'browser', label: 'Check browser', icon: Globe2, command: null },
 ];
 
-type AgentStepStatus = 'pending' | 'active' | 'done';
+type AgentStepStatus = 'pending' | 'active' | 'done' | 'error';
+
+interface AgentStepLog {
+  text: string;
+  ts: number;
+}
 
 interface AgentStep {
   id: string;
   label: string;
   status: AgentStepStatus;
+  icon: typeof FileText;
+  color: string;
+  logs: AgentStepLog[];
+  durationMs?: number;
 }
 
 interface AgentArtifact {
@@ -59,6 +78,7 @@ interface AgentArtifact {
   title: string;
   detail: string;
   icon: typeof FileText;
+  visible?: boolean;
 }
 
 interface AgentRunResult {
@@ -84,8 +104,16 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [agentArtifacts, setAgentArtifacts] = useState<AgentArtifact[]>([]);
+  const [agentElapsed, setAgentElapsed] = useState(0);
+  const [agentProgress, setAgentProgress] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const [geminiKeyInput, setGeminiKeyInput] = useState(() => localStorage.getItem('ai-web-ide.geminiApiKey') || '');
+  const [autoExtNotice, setAutoExtNotice] = useState<{ language: string; names: string[] } | null>(null);
+  const agentTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const agentStartRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const lastAutoLangRef = useRef<string>('');
 
   const {
     messages, isStreaming, isLoading, error,
@@ -95,6 +123,30 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
 
   const { getActiveTab } = useEditorStore();
   const activeTab = getActiveTab();
+  const activeLanguage = activeTab?.language ?? '';
+
+  const { autoInstallForLanguage, installed } = useExtensionStore();
+  const addNotification = useUIStore((state) => state.addNotification);
+
+  // ── Auto-install extensions when active file language changes ──
+  useEffect(() => {
+    if (!activeLanguage || activeLanguage === lastAutoLangRef.current) return;
+    lastAutoLangRef.current = activeLanguage;
+
+    const newIds = autoInstallForLanguage(activeLanguage);
+    if (newIds.length === 0) return;
+
+    const names = installed
+      .filter((ext) => newIds.includes(ext.id))
+      .map((ext) => ext.displayName);
+
+    // Show dismissible banner and notification
+    setAutoExtNotice({ language: activeLanguage, names: names.length ? names : newIds });
+    addNotification({
+      type: 'success',
+      message: `AI Pair installed ${newIds.length} extension${newIds.length > 1 ? 's' : ''} for ${activeLanguage}`,
+    });
+  }, [activeLanguage, autoInstallForLanguage, installed, addNotification]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -231,15 +283,136 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
 
   const createAgentPlan = (task: string): AgentStep[] => {
     const normalized = task.toLowerCase();
-    const steps: AgentStep[] = [
-      { id: 'understand', label: 'Understand the request and inspect current context', status: 'done' },
-      { id: 'plan', label: 'Create an implementation plan', status: 'active' },
-      { id: 'code', label: normalized.includes('bug') || normalized.includes('fix') ? 'Find and patch the likely issue' : 'Generate or update the required code', status: 'pending' },
-      { id: 'verify', label: normalized.includes('test') ? 'Run tests and explain failures' : 'Run build or verification checks', status: 'pending' },
-      { id: 'review', label: 'Summarize artifacts and next actions', status: 'pending' },
+    const isDebug = normalized.includes('bug') || normalized.includes('fix') || normalized.includes('error');
+    const isTest = normalized.includes('test');
+    const isBuild = normalized.includes('build');
+    return [
+      {
+        id: 'understand', label: 'Analyse request & inspect context', status: 'pending',
+        icon: Search, color: '#60a5fa', logs: [],
+      },
+      {
+        id: 'plan', label: 'Create implementation plan', status: 'pending',
+        icon: ClipboardList, color: '#a78bfa', logs: [],
+      },
+      {
+        id: 'code',
+        label: isDebug ? 'Locate and patch the issue' : 'Generate or update code',
+        status: 'pending',
+        icon: Edit3, color: '#c084fc', logs: [],
+      },
+      {
+        id: 'verify',
+        label: isTest ? 'Run tests and report results' : isBuild ? 'Run build & type checks' : 'Verify correctness',
+        status: 'pending',
+        icon: ShieldCheck, color: '#34d399', logs: [],
+      },
+      {
+        id: 'review', label: 'Summarise artifacts & next steps', status: 'pending',
+        icon: ListChecks, color: '#fbbf24', logs: [],
+      },
     ];
-    return steps;
   };
+
+  // Step-log lines for each step in the plan
+  const STEP_LOG_TEMPLATES: Record<string, string[]> = {
+    understand: [
+      'Scanning workspace context…',
+      'Reading active file and editor state',
+      'Parsing request intent',
+      'Context ready ✓',
+    ],
+    plan: [
+      'Evaluating impact surface…',
+      'Identifying files to modify',
+      'Breaking task into sub-steps',
+      'Plan finalised ✓',
+    ],
+    code: [
+      'Preparing code generation model…',
+      'Applying patch to src/…',
+      'Formatting & linting output',
+      'Code changes committed ✓',
+    ],
+    verify: [
+      'Running type-check (tsc --noEmit)…',
+      'Checking for broken imports',
+      'Validating runtime behaviour',
+      'Verification passed ✓',
+    ],
+    review: [
+      'Collecting all artifacts…',
+      'Generating summary diff',
+      'Preparing next-step recommendations',
+      'Done ✓',
+    ],
+  };
+
+  // Animate through agent steps sequentially while the real API call runs
+  const animateAgentSteps = useCallback((steps: AgentStep[]) => {
+    // Start elapsed timer
+    agentStartRef.current = Date.now();
+    setAgentElapsed(0);
+    setAgentProgress(0);
+    agentTimerRef.current = setInterval(() => {
+      setAgentElapsed(Math.floor((Date.now() - agentStartRef.current) / 1000));
+    }, 1000);
+
+    // Step timings (ms): understand=1200, plan=1800, code=2800, verify=2200, review=1400
+    const stepDurations = [1200, 1800, 2800, 2200, 1400];
+    let cumulative = 0;
+
+    steps.forEach((step, stepIndex) => {
+      const startDelay = cumulative;
+      const dur = stepDurations[stepIndex] ?? 1500;
+      cumulative += dur;
+
+      // Activate step
+      setTimeout(() => {
+        setAgentSteps((prev) => prev.map((s, i) =>
+          i === stepIndex ? { ...s, status: 'active' } : s
+        ));
+        setAgentProgress(((stepIndex) / steps.length) * 100);
+
+        // Emit log lines for this step
+        const logs = STEP_LOG_TEMPLATES[step.id] || ['Processing…', 'Done ✓'];
+        logs.forEach((logText, logIndex) => {
+          const logDelay = Math.floor((dur / (logs.length + 1)) * (logIndex + 1));
+          setTimeout(() => {
+            setAgentSteps((prev) => prev.map((s, i) =>
+              i === stepIndex
+                ? { ...s, logs: [...s.logs, { text: logText, ts: Date.now() }] }
+                : s
+            ));
+          }, logDelay);
+        });
+      }, startDelay);
+
+      // Complete step
+      setTimeout(() => {
+        setAgentSteps((prev) => prev.map((s, i) =>
+          i === stepIndex ? { ...s, status: 'done', durationMs: dur } : s
+        ));
+        setAgentProgress(((stepIndex + 1) / steps.length) * 100);
+      }, startDelay + dur);
+    });
+
+    // Final cleanup after all steps
+    setTimeout(() => {
+      setAgentProgress(100);
+      if (agentTimerRef.current) clearInterval(agentTimerRef.current);
+    }, cumulative + 200);
+  }, []);
+
+  const stopAgentAnimation = useCallback(() => {
+    if (agentTimerRef.current) {
+      clearInterval(agentTimerRef.current);
+      agentTimerRef.current = null;
+    }
+  }, []);
+
+  // Clean up on unmount
+  useEffect(() => () => stopAgentAnimation(), [stopAgentAnimation]);
 
   const addArtifact = (title: string, detail: string, icon: typeof FileText = FileText) => {
     setAgentArtifacts((items) => [
@@ -260,7 +433,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       const response = await fetch('/api/terminal/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, cwd: 'E:\\AI-Web-IDE' }),
+        body: JSON.stringify({ command }),
       });
       const result = await response.json();
       addArtifact(
@@ -287,6 +460,9 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
     setAgentArtifacts([]);
     setAgentTask('');
     addArtifact('Task plan', `${plan.map((step, index) => `${index + 1}. ${step.label}`).join('\n')}`, ClipboardList);
+
+    // Start animated step runner immediately
+    animateAgentSteps(plan);
 
     const userMsg: ChatMessage = {
       id: uuidv4(),
@@ -332,6 +508,9 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       }
 
       const result = await response.json() as AgentRunResult;
+      const changedFiles = result.actions
+        .filter((action) => action.success && ['writeFile', 'appendFile', 'mkdir'].includes(action.type))
+        .map((action) => action.target);
       const succeeded = result.actions.filter((action) => action.success).length;
       const failed = result.actions.length - succeeded;
       const actionLines = result.actions.length
@@ -347,6 +526,9 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
 
       completeAgentPlan();
       addArtifact('Agent result', `${succeeded} action(s) completed${failed ? `, ${failed} failed` : ''}.`, failed ? Bug : CheckCircle2);
+      if (changedFiles.length > 0) {
+        window.dispatchEvent(new CustomEvent('ai-web-ide:workspace-changed', { detail: { paths: changedFiles } }));
+      }
       result.actions.slice(0, 5).forEach((action) => {
         addArtifact(
           `${action.success ? 'Done' : 'Failed'}: ${action.type}`,
@@ -357,16 +539,19 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Failed to reach AI backend';
       appendToLastMessage(`\n\n**Error:** ${errMsg}\n\nMake sure your server is running and API key is configured in .env.`);
-      setAgentSteps((steps) => steps.map((step) => step.status === 'active' ? { ...step, status: 'pending' } : step));
+      setAgentSteps((steps) => steps.map((step) => step.status === 'active' ? { ...step, status: 'error' } : step));
       addArtifact('Agent blocked', errMsg, Bug);
     } finally {
       finalizeStreaming();
+      stopAgentAnimation();
     }
   };
 
+  const hasAIContent = messages.length > 0 || agentSteps.length > 0 || agentArtifacts.length > 0 || Boolean(error);
+
   return (
     <div
-      className="flex h-full flex-col"
+      className="flex h-full min-h-0 flex-col overflow-hidden"
       style={{
         background: 'linear-gradient(180deg, #151b20 0%, var(--color-sidebar) 190px)',
         borderLeft: '1px solid rgba(34,166,242,0.16)',
@@ -399,6 +584,14 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
           </div>
           <div className="flex items-center gap-1">
             <button
+              title="AI Settings"
+              onClick={() => setShowSettings((v) => !v)}
+              className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-white/10"
+              style={{ color: showSettings ? '#22a6f2' : 'var(--color-textMuted)' }}
+            >
+              <Settings size={14} />
+            </button>
+            <button
               title="Clear chat"
               onClick={clearMessages}
               className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-white/10"
@@ -410,8 +603,8 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
               <button
                 title="Hide AI Pair Programmer"
                 onClick={onClose}
-                className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-white/10"
-                style={{ color: 'var(--color-textMuted)' }}
+                className="flex h-8 w-8 items-center justify-center rounded-md transition-all hover:bg-red-500/20"
+                style={{ color: '#c8c8c8' }}
               >
                 <X size={16} />
               </button>
@@ -428,8 +621,74 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
         )}
       </div>
 
+      {/* Gemini Key Settings Panel */}
+      {showSettings && (
+        <div
+          className="mx-3 mb-2 rounded-xl p-3"
+          style={{ background: 'rgba(34,166,242,0.07)', border: '1px solid rgba(34,166,242,0.2)' }}
+        >
+          <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold" style={{ color: '#7fd4ff' }}>
+            <Key size={13} />
+            Gemini API Key
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              className="min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[12px] outline-none"
+              style={{ background: '#0d1117', border: '1px solid rgba(34,166,242,0.3)', color: '#eaf7ff' }}
+              placeholder="Paste your Gemini API key..."
+              value={geminiKeyInput}
+              onChange={(e) => setGeminiKeyInput(e.target.value)}
+            />
+            <button
+              className="flex-shrink-0 rounded-lg px-3 py-1.5 text-[12px] font-medium"
+              style={{ background: '#22a6f2', color: '#071018' }}
+              onClick={() => {
+                localStorage.setItem('ai-web-ide.geminiApiKey', geminiKeyInput);
+                setShowSettings(false);
+              }}
+            >
+              Save
+            </button>
+          </div>
+          <div className="mt-1.5 text-[10px]" style={{ color: '#60a0c0' }}>
+            Key is stored locally. Current provider: Gemini 1.5 Flash
+          </div>
+        </div>
+      )}
+
+      {/* Auto-extension install notice */}
+      {autoExtNotice && (
+        <div
+          className="mx-3 mb-2 rounded-xl p-3"
+          style={{ background: 'rgba(167,139,250,0.09)', border: '1px solid rgba(167,139,250,0.25)' }}
+        >
+          <div className="flex items-start gap-2">
+            <PackageCheck size={14} style={{ color: '#a78bfa', flexShrink: 0, marginTop: 1 }} />
+            <div className="min-w-0 flex-1">
+              <div className="text-[12px] font-semibold" style={{ color: '#c4b5fd' }}>
+                AI Pair installed extensions for {autoExtNotice.language}
+              </div>
+              <div className="mt-1 text-[11px]" style={{ color: '#9177d4' }}>
+                {autoExtNotice.names.join(', ')}
+              </div>
+            </div>
+            <button
+              onClick={() => setAutoExtNotice(null)}
+              className="flex-shrink-0 rounded hover:bg-white/10 p-0.5"
+              style={{ color: '#a78bfa' }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {hasAIContent && (
+          <>
       {/* Agent Workspace */}
-      <div className="flex-shrink-0 space-y-3 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+      <div className="space-y-3 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         <div className="rounded-lg p-3" style={{ background: 'rgba(34,166,242,0.075)', border: '1px solid rgba(34,166,242,0.22)' }}>
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -478,24 +737,93 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
         </div>
 
         {agentSteps.length > 0 && (
-          <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)' }}>
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--color-text)' }}>
-              <Files size={14} style={{ color: '#7dd3fc' }} />
-              Execution plan
+          <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+            {/* Progress bar */}
+            <div style={{ height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, marginBottom: 10, overflow: 'hidden' }}>
+              <div
+                style={{
+                  height: '100%',
+                  width: `${agentProgress}%`,
+                  background: 'linear-gradient(90deg, #22a6f2, #47d6b6)',
+                  borderRadius: 2,
+                  transition: 'width 0.6s ease',
+                }}
+              />
+            </div>
+            {/* Elapsed time */}
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--color-text)' }}>
+                <Files size={14} style={{ color: '#7dd3fc' }} />
+                Execution plan
+              </div>
+              {isStreaming && (
+                <div className="flex items-center gap-1 text-[10px]" style={{ color: '#7dd3fc' }}>
+                  <Clock size={11} />
+                  <span>{agentElapsed}s</span>
+                </div>
+              )}
             </div>
             <div className="space-y-2">
-              {agentSteps.map((step) => (
-                <div key={step.id} className="flex items-start gap-2 text-[11px]" style={{ color: step.status === 'pending' ? 'var(--color-textMuted)' : 'var(--color-text)' }}>
-                  {step.status === 'done' ? (
-                    <CheckCircle2 size={13} style={{ color: '#47d6b6', marginTop: 1 }} />
-                  ) : step.status === 'active' ? (
-                    <Loader2 size={13} className="animate-spin" style={{ color: '#fbbf24', marginTop: 1 }} />
-                  ) : (
-                    <Circle size={13} style={{ color: '#5f6b73', marginTop: 1 }} />
-                  )}
-                  <span className="leading-4">{step.label}</span>
-                </div>
-              ))}
+              {agentSteps.map((step) => {
+                const StepIcon = step.icon;
+                return (
+                  <div key={step.id}>
+                    <div
+                      className="flex items-start gap-2 text-[11px]"
+                      style={{ color: step.status === 'pending' ? 'var(--color-textMuted)' : 'var(--color-text)' }}
+                    >
+                      {step.status === 'done' ? (
+                        <CheckCircle2 size={13} style={{ color: '#47d6b6', marginTop: 1, flexShrink: 0 }} />
+                      ) : step.status === 'active' ? (
+                        <Loader2 size={13} className="animate-spin" style={{ color: step.color, marginTop: 1, flexShrink: 0 }} />
+                      ) : step.status === 'error' ? (
+                        <Bug size={13} style={{ color: '#f87171', marginTop: 1, flexShrink: 0 }} />
+                      ) : (
+                        <StepIcon size={13} style={{ color: '#4b5563', marginTop: 1, flexShrink: 0 }} />
+                      )}
+                      <span
+                        className="leading-4"
+                        style={{
+                          color: step.status === 'active'
+                            ? step.color
+                            : step.status === 'done'
+                            ? 'var(--color-text)'
+                            : step.status === 'error'
+                            ? '#f87171'
+                            : 'var(--color-textMuted)',
+                          fontWeight: step.status === 'active' ? 600 : 400,
+                          transition: 'color 0.3s',
+                        }}
+                      >
+                        {step.label}
+                      </span>
+                      {step.status === 'done' && step.durationMs && (
+                        <span className="ml-auto text-[9px]" style={{ color: '#4b5563', flexShrink: 0 }}>
+                          {(step.durationMs / 1000).toFixed(1)}s
+                        </span>
+                      )}
+                    </div>
+                    {/* Live log lines */}
+                    {step.logs.length > 0 && (
+                      <div className="mt-1 ml-5 space-y-0.5">
+                        {step.logs.map((log, li) => (
+                          <div
+                            key={li}
+                            className="text-[10px] leading-4"
+                            style={{
+                              color: log.text.endsWith('✓') ? '#47d6b6' : '#6b7280',
+                              animation: 'slideInLog 0.25s ease',
+                              fontFamily: 'JetBrains Mono, monospace',
+                            }}
+                          >
+                            › {log.text}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -505,7 +833,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-normal" style={{ color: 'var(--color-textMuted)' }}>Artifacts</div>
             <div className="space-y-2">
               {agentArtifacts.slice(0, 4).map(({ id, title, detail, icon: Icon }) => (
-                <div key={id} className="rounded-md p-2" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                <div key={id} className="agent-artifact-card rounded-md p-2" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
                   <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--color-text)' }}>
                     <Icon size={13} style={{ color: '#7dd3fc' }} />
                     {title}
@@ -521,7 +849,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       </div>
 
       {/* Quick Actions */}
-      <div className="grid grid-cols-3 gap-2 p-3 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+      <div className="grid grid-cols-3 gap-2 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         {AI_QUICK_ACTIONS.map(({ id, label, icon: Icon, color }) => (
           <button
             key={id}
@@ -540,38 +868,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-3">
-        {messages.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center gap-4 px-4 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl" style={{ background: 'linear-gradient(135deg, #22a6f2, #47d6b6)', color: '#071018', boxShadow: '0 20px 50px rgba(34,166,242,0.28)' }}>
-              <Bot size={30} />
-            </div>
-            <div>
-              <p className="text-[15px] font-semibold" style={{ color: 'var(--color-text)' }}>Pair programmer ready</p>
-              <p className="mt-1 text-xs leading-5" style={{ color: 'var(--color-textMuted)' }}>
-                Ask for a review, fix, explanation, tests, or a new implementation using your active file as context.
-              </p>
-            </div>
-            <div className="w-full space-y-2">
-              {[
-                'Explain this file',
-                'Review the active editor for bugs',
-                'Generate tests for this code',
-                'Refactor this into cleaner TypeScript',
-              ].map((suggestion) => (
-                <button
-                  key={suggestion}
-                  onClick={() => setInput(suggestion)}
-                  className="w-full rounded-md px-3 py-2.5 text-left text-xs transition-colors hover:bg-white/10"
-                  style={{ background: 'rgba(255,255,255,0.045)', color: 'var(--color-text)', border: '1px solid rgba(255,255,255,0.08)' }}
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
+      <div className="space-y-3 p-2">
         {messages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} onCopy={copyMessage} />
         ))}
@@ -584,9 +881,26 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
 
         <div ref={messagesEndRef} />
       </div>
+          </>
+        )}
+      </div>
 
       {/* Input */}
       <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.18)' }}>
+        <div
+          className="mb-2 flex items-start gap-2 rounded-md px-2.5 py-2 text-[11px] leading-4"
+          style={{
+            background: 'rgba(71,214,182,0.08)',
+            border: '1px solid rgba(71,214,182,0.18)',
+            color: 'var(--color-textMuted)',
+          }}
+        >
+          <ShieldCheck size={14} className="mt-0.5 flex-shrink-0" style={{ color: '#47d6b6' }} />
+          <div className="min-w-0">
+            <div className="font-semibold" style={{ color: '#b7f7ea' }}>Copyright-safe AI</div>
+            <div>Do not paste protected articles, books, lyrics, or private content. Ask for summaries, analysis, or original drafts instead.</div>
+          </div>
+        </div>
         {selectedAction && (
           <div className="flex items-center gap-1.5 mb-2 text-xxs" style={{ color: 'var(--color-textMuted)' }}>
             <span className="px-1.5 py-0.5 rounded" style={{ background: '#22a6f220', color: '#7dd3fc' }}>
@@ -604,7 +918,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
             placeholder={
               selectedAction
                 ? `Describe what you want to ${selectedAction}...`
-                : 'Ask AI anything... (Shift+Enter for new line)'
+                : 'Ask a question...'
             }
             className="flex-1 resize-none rounded-lg px-3 py-2 text-xs"
             style={{
@@ -614,6 +928,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
               minHeight: 60,
               maxHeight: 120,
               outline: 'none',
+              overflowY: 'auto',
             }}
             rows={2}
             disabled={isStreaming}

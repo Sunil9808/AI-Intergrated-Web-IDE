@@ -7,6 +7,7 @@ import {
   GitBranch,
   PlugZap,
   Package,
+  Palette,
   Power,
   Settings,
   ShieldCheck,
@@ -24,6 +25,8 @@ import {
 import { useUIStore } from '../../store/uiStore';
 import PublisherTrustDialog from '../Extensions/PublisherTrustDialog';
 import { isPublisherTrusted, trustPublisher } from '../../services/extensionTrustService';
+import { getActiveExtensionIds } from '../../services/extensionRuntime';
+import { getThemeForExtension, applyTheme } from '../../services/extensionThemeService';
 
 interface ExtensionDetailEditorProps {
   content: string;
@@ -76,6 +79,8 @@ export default function ExtensionDetailEditor({ content }: ExtensionDetailEditor
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const item = remoteDetails?.item || initialItem;
   const isInstalled = installed.some((extension) => extension.id === item.id);
+  const isActive = isInstalled && getActiveExtensionIds().has(item.id);
+  const hasTheme = Boolean(getThemeForExtension(item.id));
   const capabilities = useMemo(() => {
     const remoteCategories = remoteDetails?.categories || [];
     return uniqueList([...remoteCategories, ...getExtensionCapabilities(item)]);
@@ -175,8 +180,24 @@ export default function ExtensionDetailEditor({ content }: ExtensionDetailEditor
                   <>
                     <span className="inline-flex h-[34px] items-center gap-2 rounded px-3 text-[16px] font-medium" style={{ background: '#173f2b', color: '#8ee6ad' }}>
                       <Check size={18} />
-                      Installed
+                      {isActive ? 'Active' : 'Installed'}
                     </span>
+                    {hasTheme && (
+                      <button
+                        className="inline-flex h-[34px] items-center gap-2 rounded px-3 text-[16px] font-medium hover:brightness-110"
+                        style={{ background: '#2a1d4a', color: '#c8a0ff' }}
+                        onClick={() => {
+                          const theme = getThemeForExtension(item.id);
+                          if (theme) {
+                            applyTheme(theme);
+                            addNotification({ type: 'success', message: `Applied ${theme.name} theme` });
+                          }
+                        }}
+                      >
+                        <Palette size={16} />
+                        Apply Theme
+                      </button>
+                    )}
                     <button className="h-[34px] rounded px-3 text-[16px] font-medium hover:brightness-110" style={primaryButtonStyle} onClick={handleUninstall}>
                       Uninstall
                     </button>

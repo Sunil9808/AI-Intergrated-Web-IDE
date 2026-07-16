@@ -20,6 +20,10 @@ export interface ExtensionItem {
   changelogUrl?: string;
   cachedPackage?: boolean;
   capabilities?: string[];
+  /** Set to true when the AI pair automatically installed this extension */
+  aiAutoInstalled?: boolean;
+  /** Language(s) this extension primarily supports */
+  targetLanguages?: string[];
 }
 
 interface ExtensionStore {
@@ -28,6 +32,11 @@ interface ExtensionStore {
   installExtensionFromInternet: (extension: ExtensionItem) => Promise<ExtensionItem>;
   uninstallExtension: (extensionId: string) => void;
   isInstalled: (extensionId: string) => boolean;
+  /**
+   * AI pair auto-installs all catalog extensions that match `language`.
+   * Returns the list of extension IDs that were newly installed.
+   */
+  autoInstallForLanguage: (language: string) => string[];
 }
 
 const INSTALLED_STORAGE_KEY = 'ai-web-ide.installedExtensions.v2';
@@ -107,6 +116,56 @@ export const useExtensionStore = create<ExtensionStore>((set, get) => ({
     return { installed };
   }),
   isInstalled: (extensionId) => get().installed.some((item) => item.id === extensionId),
+
+  autoInstallForLanguage: (language) => {
+    const lang = language.toLowerCase();
+    const newlyInstalled: string[] = [];
+    set((state) => {
+      const alreadyInstalled = new Set(state.installed.map((item) => item.id));
+      const toInstall = recommendedCatalog.filter((item) => {
+        if (alreadyInstalled.has(item.id)) return false;
+        const haystack = `${item.id} ${item.displayName} ${item.description}`.toLowerCase();
+        // Match language-relevant extensions
+        if (lang === 'typescript' || lang === 'javascript') {
+          if (/prettier|eslint|typescript|javascript/.test(haystack)) return true;
+        }
+        if (lang === 'python') {
+          if (/python|pylint|black/.test(haystack)) return true;
+        }
+        if (lang === 'rust') {
+          if (/rust/.test(haystack)) return true;
+        }
+        if (lang === 'go') {
+          if (/\bgo\b/.test(haystack)) return true;
+        }
+        if (lang === 'java') {
+          if (/java/.test(haystack)) return true;
+        }
+        if (lang === 'cpp' || lang === 'c++') {
+          if (/c\+\+|cpptools/.test(haystack)) return true;
+        }
+        if (lang === 'html' || lang === 'css') {
+          if (/tailwind|auto.rename/.test(haystack)) return true;
+        }
+        return false;
+      });
+
+      if (toInstall.length === 0) return state;
+
+      toInstall.forEach((item) => newlyInstalled.push(item.id));
+      const nextInstalled = [
+        ...state.installed,
+        ...toInstall.map((item) => ({
+          ...activateExtension(item, 'AI Pair'),
+          aiAutoInstalled: true,
+          targetLanguages: [lang],
+        })),
+      ];
+      saveInstalledExtensions(nextInstalled);
+      return { installed: nextInstalled };
+    });
+    return newlyInstalled;
+  },
 }));
 
 export function extension(

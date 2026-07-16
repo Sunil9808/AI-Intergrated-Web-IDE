@@ -4,6 +4,7 @@ import Breadcrumbs from './Breadcrumbs';
 import MonacoEditor from './MonacoEditor';
 import ThunderRequestEditor from './ThunderRequestEditor';
 import ExtensionDetailEditor from './ExtensionDetailEditor';
+import SettingsEditor from './SettingsEditor';
 import { useEditorStore } from '../../store/editorStore';
 import { useFileStore } from '../../store/fileStore';
 import { useUIStore } from '../../store/uiStore';
@@ -66,10 +67,6 @@ export default function Editor() {
     }
   }, [activeTabId, updateTabContent]);
 
-  if (tabs.length === 0) {
-    return <WelcomeEditor />;
-  }
-
   const renderActiveEditor = () => {
     if (activeTab?.language === 'thunder-request') {
       return <ThunderRequestEditor tabId={activeTab.id} content={activeTab.content} />;
@@ -77,6 +74,10 @@ export default function Editor() {
 
     if (activeTab?.language === 'extension-detail') {
       return <ExtensionDetailEditor content={activeTab.content} />;
+    }
+
+    if (activeTab?.language === 'ide-settings') {
+      return <SettingsEditor />;
     }
 
     if (activeTab) {
@@ -93,8 +94,32 @@ export default function Editor() {
     }
 
     return (
-      <div className="h-full flex items-center justify-center text-xs" style={{ color: 'var(--color-textMuted)', background: 'var(--color-background)' }}>
-        Select a file to open
+      <div
+        className="h-full w-full"
+        style={{
+          backgroundImage: 'url("https://img.freepik.com/premium-photo/elegant-dark-background-designs_1199394-20502.jpg")',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+          position: 'relative',
+        }}
+      >
+        {/* Subtle overlay */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'linear-gradient(135deg, rgba(10,14,20,0.55) 0%, rgba(0,0,0,0.3) 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <span style={{ color: 'rgba(255,255,255,0.18)', fontSize: 13, letterSpacing: '0.06em', fontFamily: 'Inter, sans-serif' }}>
+            Open a file to start editing
+          </span>
+        </div>
       </div>
     );
   };
@@ -102,7 +127,7 @@ export default function Editor() {
   return (
     <div className="flex flex-col h-full overflow-hidden" style={{ background: 'var(--color-background)' }}>
       <EditorTabs />
-      {activeTab && !['thunder-request', 'extension-detail'].includes(activeTab.language) && <Breadcrumbs />}
+      {activeTab && !['thunder-request', 'extension-detail', 'ide-settings'].includes(activeTab.language) && <Breadcrumbs />}
       <div className="flex-1 overflow-hidden">
         {splitConfig.enabled ? (
           <div className={splitConfig.direction === 'vertical' ? 'flex h-full' : 'flex h-full flex-col'}>
