@@ -305,7 +305,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
         id: 'verify',
         label: isTest ? 'Run tests and report results' : isBuild ? 'Run build & type checks' : 'Verify correctness',
         status: 'pending',
-        icon: ShieldCheck, color: '#34d399', logs: [],
+        icon: CheckCircle2, color: '#34d399', logs: [],
       },
       {
         id: 'review', label: 'Summarise artifacts & next steps', status: 'pending',
