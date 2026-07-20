@@ -1,39 +1,42 @@
 /**
  * Extension Formatter Service
- * Provides code formatting when Prettier (or other formatter extensions) are installed.
- * Uses Monaco's built-in formatter enhanced with extension-specific rules.
+ * Registers formatter providers from installed extensions with Monaco
  */
 import type * as Monaco from 'monaco-editor';
-import { ExtensionItem } from '../store/extensionStore';
+import { ExtensionItem, getExtensionCapabilities } from '../store/extensionStore';
 
-const PRETTIER_EXTENSION_IDS = new Set(['esbenp.prettier-vscode']);
-const SUPPORTED_LANGUAGES = new Set([
-  'javascript', 'typescript', 'javascriptreact', 'typescriptreact',
-  'json', 'html', 'css', 'scss', 'less', 'markdown', 'yaml',
-]);
-
-let _formatCommandRegistered = false;
-
-/**
- * Activate formatter when Prettier extension is installed.
- * Registers a Format Document command that applies Prettier-style formatting.
- */
 export function activateFormatter(
-  monaco: typeof import('monaco-editor'),
+  monaco: typeof Monaco,
   installed: ExtensionItem[]
-): void {
-  const hasPrettier = installed.some((e) => PRETTIER_EXTENSION_IDS.has(e.id));
-  if (!hasPrettier || _formatCommandRegistered) return;
+) {
+  const formatters = installed.filter((ext) =>
+    getExtensionCapabilities(ext).includes('Formatter')
+  );
 
-  _formatCommandRegistered = true;
+  if (!formatters.length) return;
 
-  // Register a document formatting provider for all supported languages
-  for (const languageId of SUPPORTED_LANGUAGES) {
-    monaco.languages.registerDocumentFormattingEditProvider(languageId, {
-      provideDocumentFormattingEdits(model) {
-        const text = model.getValue();
-        const formatted = prettierFormat(text, languageId);
-        if (formatted === text) return [];
+  // Languages that support formatting
+  const languages = [
+    'typescript',
+    'javascript',
+    'jsx',
+    'tsx',
+    'json',
+    'html',
+    'css',
+    'scss',
+    'python',
+  ];
+
+  languages.forEach((lang) => {
+    monaco.languages.registerDocumentFormattingEditProvider(lang, {
+      provideDocumentFormattingEdits: async (model, options, token) => {
+        if (token.isCancellationRequested) return [];
+
+        const code = model.getValue();
+        const formatted = formatCode(code, lang, options);
+
+        if (formatted === code) return [];
 
         return [
           {
@@ -43,123 +46,193 @@ export function activateFormatter(
         ];
       },
     });
-  }
+  });
 }
 
-export function deactivateFormatter(): void {
-  _formatCommandRegistered = false;
-  // Disposables are managed by Monaco's GC when providers are overridden
-}
-
-// ── Prettier-style formatting rules ─────────────────────────────────────────
-
-function prettierFormat(text: string, languageId: string): string {
+function formatCode(
+  code: string,
+  language: string,
+  options: any
+): string {
   try {
-    if (languageId === 'json') return formatJson(text);
-    if (languageId === 'css' || languageId === 'scss' || languageId === 'less') return formatCss(text);
-    if (languageId === 'html') return formatHtml(text);
-    if (JS_LANGUAGES.has(languageId)) return formatJs(text);
-    if (languageId === 'markdown') return formatMarkdown(text);
-    return text;
-  } catch {
-    return text;
+    // JSON formatting
+    if (language === 'json') {
+      const parsed = JSON.parse(code);
+      const tabSize = options.tabSize || 2;
+      const formatted = JSON.stringify(parsed, null, tabSize);
+      return formatted + (code.endsWith('\n') ? '\n' : '');
+    }
+
+    // Prettier-like formatting for JS/TS/JSX/TSX
+    if (
+      ['typescript', 'javascript', 'jsx', 'tsx'].includes(language)
+    ) {
+      return formatJavaScript(code, options);
+    }
+
+    // HTML formatting
+    if (language === 'html') {
+      return formatHTML(code, options);
+    }
+
+    // CSS/SCSS formatting
+    if (['css', 'scss'].includes(language)) {
+      return formatCSS(code, options);
+    }
+
+    // Python formatting
+    if (language === 'python') {
+      return formatPython(code, options);
+    }
+
+    // Fallback: basic formatting
+    return formatBasic(code, options);
+  } catch (error) {
+    console.error('[Formatter]', error);
+    return code;
   }
 }
 
-const JS_LANGUAGES = new Set(['javascript', 'typescript', 'javascriptreact', 'typescriptreact']);
+function formatJavaScript(code: string, options: any): string {
+  const tabSize = options.tabSize || 2;
+  const useTabs = options.useTabs || false;
+  const indent = useTabs ? '\t' : ' '.repeat(tabSize);
 
-function formatJson(text: string): string {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2) + '\n';
-  } catch {
-    return text;
-  }
-}
+  let result = code;
 
-function formatJs(text: string): string {
-  const lines = text.split('\n');
-  const result: string[] = [];
+  // Normalize line endings
+  result = result.replace(/\r\n/g, '\n');
+
+  // Split into lines and process
+  const lines = result.split('\n');
   let indentLevel = 0;
-  const indentStr = '  '; // 2-space indent (Prettier default)
+  const formatted: string[] = [];
 
-  for (let raw of lines) {
-    const line = raw.trim();
-    if (!line) { result.push(''); continue; }
+  for (const line of lines) {
+    const trimmed = line.trim();
 
-    // Decrease indent before closing brackets
-    if (/^[}\])]/.test(line)) indentLevel = Math.max(0, indentLevel - 1);
+    if (!trimmed) {
+      formatted.push('');
+      continue;
+    }
 
-    // Enforce single quotes (Prettier default)
-    const formatted = line
-      .replace(/"/g, (m, offset, str) => {
-        // Don't replace inside template literals or JSX attributes
-        if (isInsideTemplateLiteral(str, offset)) return m;
-        return "'";
-      })
-      // Enforce semicolons at end of statements
-      .replace(/([^{};,\(\)\[\]//])\s*$/, (m, p1) => {
-        if (/^(if|else|for|while|function|class|import|export|\/\/)/.test(line)) return m;
-        return p1 + ';';
-      });
+    // Decrease indent for closing braces
+    if (trimmed.startsWith('}') || trimmed.startsWith(']') || trimmed.startsWith(')')) {
+      indentLevel = Math.max(0, indentLevel - 1);
+    }
 
-    result.push(indentStr.repeat(indentLevel) + formatted);
+    // Add the line with proper indentation
+    formatted.push(indent.repeat(indentLevel) + trimmed);
 
-    // Increase indent after opening brackets
-    if (/[{(\[]$/.test(line.replace(/\/\/.*$/, ''))) indentLevel++;
+    // Increase indent for opening braces
+    const openCount = (trimmed.match(/[{\[(/]/g) || []).length;
+    const closeCount = (trimmed.match(/[}\])]/g) || []).length;
+    indentLevel += openCount - closeCount;
   }
 
-  return result.join('\n').replace(/\n{3,}/g, '\n\n') + '\n';
+  result = formatted.join('\n');
+
+  // Ensure file ends with newline
+  if (result && !result.endsWith('\n')) {
+    result += '\n';
+  }
+
+  return result;
 }
 
-function formatCss(text: string): string {
-  // Ensure each declaration is on its own line and properly indented
-  return text
-    .replace(/\{/g, ' {\n  ')
-    .replace(/;(?!\s*\n)/g, ';\n  ')
-    .replace(/\}/g, '\n}\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim() + '\n';
-}
+function formatHTML(code: string, options: any): string {
+  const tabSize = options.tabSize || 2;
+  const indent = ' '.repeat(tabSize);
+  let result = code.replace(/\r\n/g, '\n');
 
-function formatHtml(text: string): string {
-  const lines = text.split('\n');
-  const result: string[] = [];
+  const lines = result.split('\n');
   let indentLevel = 0;
-  const indentStr = '  ';
-  const voidElements = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+  const formatted: string[] = [];
 
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) { result.push(''); continue; }
+  for (const line of lines) {
+    const trimmed = line.trim();
 
-    const closingMatch = /^<\/([a-z][a-z0-9]*)/i.exec(line);
-    if (closingMatch) indentLevel = Math.max(0, indentLevel - 1);
+    if (!trimmed) continue;
 
-    result.push(indentStr.repeat(indentLevel) + line);
-
-    const openingMatch = /^<([a-z][a-z0-9]*)/i.exec(line);
-    if (openingMatch && !voidElements.has(openingMatch[1].toLowerCase()) && !line.endsWith('/>') && !closingMatch) {
-      indentLevel++;
+    // Self-closing tags
+    if (/\/?>\s*$/.test(trimmed)) {
+      if (trimmed.startsWith('</')) {
+        indentLevel = Math.max(0, indentLevel - 1);
+      }
+      formatted.push(indent.repeat(indentLevel) + trimmed);
+      if (!trimmed.startsWith('</') && !trimmed.endsWith('/>')) {
+        indentLevel++;
+      }
+    } else {
+      formatted.push(indent.repeat(indentLevel) + trimmed);
     }
   }
 
-  return result.join('\n').replace(/\n{3,}/g, '\n\n') + '\n';
-}
-
-function formatMarkdown(text: string): string {
-  // Ensure blank lines around headings and code blocks
-  return text
-    .replace(/\n(#{1,6} )/g, '\n\n$1')
-    .replace(/(#{1,6} .+)\n(?!\n)/g, '$1\n\n')
-    .replace(/```/g, '\n```')
-    .replace(/\n{4,}/g, '\n\n\n')
-    .trim() + '\n';
-}
-
-function isInsideTemplateLiteral(str: string, offset: number): boolean {
-  let inTemplate = false;
-  for (let i = 0; i < offset; i++) {
-    if (str[i] === '`') inTemplate = !inTemplate;
+  result = formatted.join('\n');
+  if (result && !result.endsWith('\n')) {
+    result += '\n';
   }
-  return inTemplate;
+
+  return result;
+}
+
+function formatCSS(code: string, options: any): string {
+  let result = code.replace(/\r\n/g, '\n');
+
+  // Remove extra spaces
+  result = result.replace(/\s*{\s*/g, ' {\n');
+  result = result.replace(/\s*}\s*/g, '\n}\n');
+  result = result.replace(/\s*;\s*/g, ';\n');
+  result = result.replace(/,\s*/g, ',\n');
+
+  // Trim lines
+  result = result
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join('\n');
+
+  if (result && !result.endsWith('\n')) {
+    result += '\n';
+  }
+
+  return result;
+}
+
+function formatPython(code: string, options: any): string {
+  let result = code.replace(/\r\n/g, '\n');
+
+  // Normalize indentation
+  const lines = result.split('\n');
+  const formatted = lines.map((line) => {
+    if (!line.trim()) return '';
+    const leadingSpaces = line.match(/^\s*/)?.[0].length || 0;
+    const normalized = Math.floor(leadingSpaces / 4) * 4;
+    return ' '.repeat(normalized) + line.trim();
+  });
+
+  result = formatted.join('\n');
+
+  if (result && !result.endsWith('\n')) {
+    result += '\n';
+  }
+
+  return result;
+}
+
+function formatBasic(code: string, options: any): string {
+  let result = code.replace(/\r\n/g, '\n');
+
+  // Trim trailing whitespace from each line
+  result = result
+    .split('\n')
+    .map((line) => line.replace(/\s+$/g, ''))
+    .join('\n');
+
+  // Ensure file ends with newline
+  if (result && !result.endsWith('\n')) {
+    result += '\n';
+  }
+
+  return result;
 }

@@ -1,209 +1,244 @@
 /**
  * Extension Linter Service
- * Provides simulated ESLint-style markers in Monaco when the
- * ESLint or StyleLint extensions are installed.
+ * Registers linter providers from installed extensions with Monaco
  */
 import type * as Monaco from 'monaco-editor';
-import { ExtensionItem } from '../store/extensionStore';
-
-type MarkerData = Monaco.editor.IMarkerData;
-
-// ── ESLint-style rules ──────────────────────────────────────────────────────
-
-interface LintRule {
-  id: string;
-  check: (line: string, lineIndex: number, lines: string[]) => LintViolation | null;
-  severity: Monaco.MarkerSeverity;
-}
-
-interface LintViolation {
-  message: string;
-  startColumn: number;
-  endColumn: number;
-  code: string;
-}
-
-const JS_TS_RULES: LintRule[] = [
-  {
-    id: 'no-var',
-    severity: 2 as Monaco.MarkerSeverity, // Warning
-    check: (line, lineIndex) => {
-      const match = /\bvar\s+(\w+)/.exec(line);
-      if (!match) return null;
-      return {
-        message: "Unexpected 'var'. Use 'const' or 'let' instead. (no-var)",
-        startColumn: match.index + 1,
-        endColumn: match.index + match[0].length + 1,
-        code: 'no-var',
-      };
-    },
-  },
-  {
-    id: 'no-console',
-    severity: 4 as Monaco.MarkerSeverity, // Hint
-    check: (line) => {
-      const match = /\bconsole\.(log|warn|error|info|debug)\s*\(/.exec(line);
-      if (!match) return null;
-      return {
-        message: `Unexpected console statement. (no-console)`,
-        startColumn: match.index + 1,
-        endColumn: match.index + match[0].length + 1,
-        code: 'no-console',
-      };
-    },
-  },
-  {
-    id: 'eqeqeq',
-    severity: 2 as Monaco.MarkerSeverity,
-    check: (line) => {
-      const match = /[^=!<>]==[^=]|[^=!<>]!=[^=]/.exec(line);
-      if (!match) return null;
-      return {
-        message: "Expected '===' and instead saw '=='. Use strict equality. (eqeqeq)",
-        startColumn: match.index + 2,
-        endColumn: match.index + match[0].length,
-        code: 'eqeqeq',
-      };
-    },
-  },
-  {
-    id: 'no-unused-vars',
-    severity: 2 as Monaco.MarkerSeverity,
-    check: (line, lineIndex, lines) => {
-      const match = /(?:const|let|var)\s+(\w+)\s*=/.exec(line);
-      if (!match) return null;
-      const varName = match[1];
-      // Simple heuristic: declared but never referenced elsewhere
-      const usedElsewhere = lines.some(
-        (l, i) => i !== lineIndex && new RegExp(`\\b${varName}\\b`).test(l)
-      );
-      if (usedElsewhere) return null;
-      return {
-        message: `'${varName}' is assigned a value but never used. (no-unused-vars)`,
-        startColumn: match.index + match[0].indexOf(varName) + 1,
-        endColumn: match.index + match[0].indexOf(varName) + varName.length + 1,
-        code: 'no-unused-vars',
-      };
-    },
-  },
-];
-
-const PYTHON_RULES: LintRule[] = [
-  {
-    id: 'E302',
-    severity: 2 as Monaco.MarkerSeverity,
-    check: (line, lineIndex, lines) => {
-      if (!/^(def |class )/.test(line)) return null;
-      if (lineIndex === 0) return null;
-      const prevLine = lines[lineIndex - 1]?.trim();
-      const prevPrevLine = lines[lineIndex - 2]?.trim();
-      if (prevLine === '' && prevPrevLine === '') return null;
-      return {
-        message: 'E302 expected 2 blank lines, found 1',
-        startColumn: 1,
-        endColumn: line.length + 1,
-        code: 'E302',
-      };
-    },
-  },
-  {
-    id: 'W291',
-    severity: 4 as Monaco.MarkerSeverity,
-    check: (line) => {
-      if (!/\s+$/.test(line)) return null;
-      return {
-        message: 'W291 trailing whitespace',
-        startColumn: line.trimEnd().length + 1,
-        endColumn: line.length + 1,
-        code: 'W291',
-      };
-    },
-  },
-];
-
-// ── Linter core ─────────────────────────────────────────────────────────────
-
-const ESLINT_IDS = new Set(['dbaeumer.vscode-eslint', 'ms-python.python']);
-const JS_LANGUAGES = new Set(['javascript', 'typescript', 'javascriptreact', 'typescriptreact']);
-
-let _disposable: { dispose(): void } | null = null;
-let _currentModel: Monaco.editor.ITextModel | null = null;
+import { ExtensionItem, getExtensionCapabilities } from '../store/extensionStore';
 
 export function activateLinter(
-  monaco: typeof import('monaco-editor'),
+  monaco: typeof Monaco,
   installed: ExtensionItem[]
 ) {
-  const hasEslint = installed.some((e) => ESLINT_IDS.has(e.id));
-  if (!hasEslint) {
-    deactivateLinter(monaco);
-    return;
-  }
+  const linters = installed.filter((ext) =>
+    getExtensionCapabilities(ext).includes('Linter')
+  );
 
-  // Lint current model immediately
-  const activeModel = monaco.editor.getEditors()[0]?.getModel();
-  if (activeModel) lintModel(monaco, activeModel);
+  if (!linters.length) return;
 
-  // Set up listener for future model changes using onDidCreateEditor
-  _disposable?.dispose();
-  _disposable = monaco.editor.onDidCreateEditor((editor) => {
-    const model = editor.getModel();
-    if (!model) return;
-    _currentModel = model;
-    lintModel(monaco, model);
+  // Languages that support linting
+  const languages = ['typescript', 'javascript', 'jsx', 'tsx', 'python', 'json'];
 
-    // Re-lint on content change (debounced)
-    let timer: ReturnType<typeof setTimeout>;
-    model.onDidChangeContent(() => {
-      clearTimeout(timer);
-      timer = setTimeout(() => lintModel(monaco, model), 600);
+  languages.forEach((lang) => {
+    monaco.languages.registerCodeActionProvider(lang, {
+      provideCodeActions: async (model, range, context, token) => {
+        if (token.isCancellationRequested) {
+          return { actions: [], dispose: () => {} };
+        }
+
+        const code = model.getValue();
+        const issues = lintCode(code, lang);
+
+        const actions = issues.map((issue) => ({
+          title: issue.message,
+          kind: monaco.languages.CodeActionKind.QuickFix,
+          diagnostics: [issue],
+          isPreferred: false,
+        }));
+
+        return { actions, dispose: () => {} };
+      },
     });
 
-    // Also re-lint when model changes on an existing editor
-    editor.onDidChangeModel((e) => {
-      const newModel = editor.getModel();
-      if (!newModel) return;
-      _currentModel = newModel;
-      lintModel(monaco, newModel);
+    // Also register as code action provider for diagnostics
+    const disposable = monaco.languages.onLanguage(lang, () => {
+      // Register diagnostics
+      const diagnosticCollection: Map<string, Monaco.languages.IMarkerData[]> =
+        new Map();
+
+      // This would need to be called whenever the model changes
+      // For now, we'll use the code action provider above
     });
   });
 }
 
-export function deactivateLinter(monaco: typeof import('monaco-editor')) {
-  _disposable?.dispose();
-  _disposable = null;
-  if (_currentModel) {
-    monaco.editor.setModelMarkers(_currentModel, 'eslint', []);
+function lintCode(code: string, language: string): Monaco.languages.IMarkerData[] {
+  const issues: Monaco.languages.IMarkerData[] = [];
+
+  if (['typescript', 'javascript', 'jsx', 'tsx'].includes(language)) {
+    lintJavaScript(code, issues);
+  } else if (language === 'python') {
+    lintPython(code, issues);
+  } else if (language === 'json') {
+    lintJSON(code, issues);
   }
-  // Clear all ESLint markers from all models
-  monaco.editor.getModels().forEach((m) => {
-    monaco.editor.setModelMarkers(m, 'eslint', []);
+
+  return issues;
+}
+
+function lintJavaScript(
+  code: string,
+  issues: Monaco.languages.IMarkerData[]
+) {
+  const lines = code.split('\n');
+
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    const lineStart = code.indexOf(line);
+
+    // Check for console.log in production-like code
+    if (/console\.(log|warn|error|info|debug)/.test(line)) {
+      const match = line.match(/console\.(log|warn|error|info|debug)/);
+      if (match) {
+        const column = line.indexOf(match[0]);
+        issues.push({
+          startLineNumber: lineNum,
+          startColumn: column + 1,
+          endLineNumber: lineNum,
+          endColumn: column + match[0].length + 1,
+          message: `Unexpected console statement: ${match[0]}`,
+          severity: 2, // Warning
+          code: 'no-console',
+        });
+      }
+    }
+
+    // Check for debugger statements
+    if (/\bdebugger\b/.test(line)) {
+      const column = line.indexOf('debugger');
+      issues.push({
+        startLineNumber: lineNum,
+        startColumn: column + 1,
+        endLineNumber: lineNum,
+        endColumn: column + 'debugger'.length + 1,
+        message: 'Debugger statement found',
+        severity: 1, // Error
+        code: 'no-debugger',
+      });
+    }
+
+    // Check for missing semicolons (basic)
+    const trimmed = line.trim();
+    if (
+      trimmed &&
+      !trimmed.endsWith(';') &&
+      !trimmed.endsWith(',') &&
+      !trimmed.endsWith('{') &&
+      !trimmed.endsWith('}') &&
+      !trimmed.endsWith(':') &&
+      !trimmed.endsWith('(') &&
+      !trimmed.endsWith('[') &&
+      !trimmed.startsWith('//')
+    ) {
+      if (/^(const|let|var|return|throw|import|export)\s/.test(trimmed)) {
+        issues.push({
+          startLineNumber: lineNum,
+          startColumn: line.length,
+          endLineNumber: lineNum,
+          endColumn: line.length + 1,
+          message: 'Missing semicolon',
+          severity: 3, // Info
+          code: 'missing-semicolon',
+        });
+      }
+    }
+
+    // Check for unused variables (basic pattern)
+    const unusedMatch = line.match(/(?:const|let|var)\s+(\w+)\s*=/);
+    if (unusedMatch) {
+      const varName = unusedMatch[1];
+      // Simple check: if variable is declared but not used in remaining code
+      const afterDeclaration = code.substring(lineStart + line.length);
+      if (!new RegExp(`\\b${varName}\\b`).test(afterDeclaration)) {
+        const column = line.indexOf(varName);
+        issues.push({
+          startLineNumber: lineNum,
+          startColumn: column + 1,
+          endLineNumber: lineNum,
+          endColumn: column + varName.length + 1,
+          message: `Variable '${varName}' is assigned but never used`,
+          severity: 2, // Warning
+          code: 'no-unused-vars',
+        });
+      }
+    }
   });
 }
 
-function lintModel(monaco: typeof import('monaco-editor'), model: Monaco.editor.ITextModel) {
-  const language = model.getLanguageId();
-  const text = model.getValue();
-  const lines = text.split('\n');
+function lintPython(
+  code: string,
+  issues: Monaco.languages.IMarkerData[]
+) {
+  const lines = code.split('\n');
 
-  const markers: MarkerData[] = [];
-  const rules: LintRule[] = JS_LANGUAGES.has(language) ? JS_TS_RULES : language === 'python' ? PYTHON_RULES : [];
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
 
-  for (let i = 0; i < lines.length; i++) {
-    for (const rule of rules) {
-      const violation = rule.check(lines[i], i, lines);
-      if (!violation) continue;
-      markers.push({
-        severity: rule.severity,
-        message: violation.message,
-        startLineNumber: i + 1,
-        startColumn: violation.startColumn,
-        endLineNumber: i + 1,
-        endColumn: violation.endColumn,
-        source: 'ESLint',
-        code: violation.code,
+    // Check for print statements (should use logging)
+    if (/\bprint\s*\(/.test(line)) {
+      const column = line.indexOf('print');
+      issues.push({
+        startLineNumber: lineNum,
+        startColumn: column + 1,
+        endLineNumber: lineNum,
+        endColumn: column + 'print'.length + 1,
+        message: 'Use logging instead of print',
+        severity: 2, // Warning
+        code: 'use-logging',
+      });
+    }
+
+    // Check for missing docstrings
+    const funcMatch = line.match(/^def\s+(\w+)/);
+    if (funcMatch) {
+      const nextLine = lines[index + 1];
+      if (
+        nextLine &&
+        !nextLine.trim().startsWith('"""') &&
+        !nextLine.trim().startsWith("'''")
+      ) {
+        issues.push({
+          startLineNumber: lineNum,
+          startColumn: 1,
+          endLineNumber: lineNum,
+          endColumn: line.length + 1,
+          message: 'Missing docstring',
+          severity: 3, // Info
+          code: 'missing-docstring',
+        });
+      }
+    }
+
+    // Check for multiple statements on one line
+    if (line.includes(';')) {
+      const column = line.indexOf(';');
+      issues.push({
+        startLineNumber: lineNum,
+        startColumn: column + 1,
+        endLineNumber: lineNum,
+        endColumn: column + 2,
+        message: 'Multiple statements on one line',
+        severity: 2, // Warning
+        code: 'multiple-statements',
+      });
+    }
+  });
+}
+
+function lintJSON(
+  code: string,
+  issues: Monaco.languages.IMarkerData[]
+) {
+  try {
+    JSON.parse(code);
+  } catch (error) {
+    const errorMsg = String(error);
+    const match = errorMsg.match(/position\s(\d+)/);
+    if (match) {
+      const position = parseInt(match[1]);
+      const lineNum =
+        code.substring(0, position).split('\n').length;
+      const lineStart = code.lastIndexOf('\n', position) + 1;
+      const column = position - lineStart + 1;
+
+      issues.push({
+        startLineNumber: lineNum,
+        startColumn: column,
+        endLineNumber: lineNum,
+        endColumn: column + 1,
+        message: `JSON Error: ${errorMsg}`,
+        severity: 1, // Error
+        code: 'json-syntax-error',
       });
     }
   }
-
-  monaco.editor.setModelMarkers(model, 'eslint', markers);
 }
