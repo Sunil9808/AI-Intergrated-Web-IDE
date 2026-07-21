@@ -1,6 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
-import { streamChatResponse, getChatCompletion, getInlineCompletion, AIContext } from '../services/ai/aiService';
+import { streamChatResponse, getChatCompletion, getInlineCompletion, AIContext, AIRequestOptions } from '../services/ai/aiService';
 import { runPairProgrammerAgent, autoDetectAndRecommendExtensions } from '../services/ai/agentService';
+
+function getAIOptions(body: { geminiApiKey?: unknown }): AIRequestOptions {
+  return typeof body.geminiApiKey === 'string' && body.geminiApiKey.trim()
+    ? { geminiApiKey: body.geminiApiKey.trim() }
+    : {};
+}
 
 export const aiController = {
   async chat(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -12,7 +18,7 @@ export const aiController = {
         return;
       }
 
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -27,7 +33,7 @@ export const aiController = {
         return;
       }
 
-      const result = await runPairProgrammerAgent(task, context);
+      const result = await runPairProgrammerAgent(task, context, getAIOptions(req.body));
       res.json(result);
     } catch (error) {
       next(error);
@@ -43,7 +49,7 @@ export const aiController = {
       };
 
       const prompt = `Explain this ${language} code in detail:\n\n\`\`\`${language}\n${code}\n\`\`\``;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -58,7 +64,7 @@ export const aiController = {
       };
 
       const prompt = `Generate production-ready ${language} code for:\n\n${description}\n\nProvide clean, well-commented code with explanations.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -74,7 +80,7 @@ export const aiController = {
       };
 
       const prompt = `Debug this ${language} code:\n\nError: ${errorMsg}\n\nCode:\n\`\`\`${language}\n${code}\n\`\`\`\n\nFind the root cause and provide a fix with explanation.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -90,7 +96,7 @@ export const aiController = {
       };
 
       const prompt = `Refactor this ${language} code: ${instruction}\n\n\`\`\`${language}\n${code}\n\`\`\`\n\nProvide refactored code with explanations of all changes.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -105,7 +111,7 @@ export const aiController = {
       };
 
       const prompt = `Review this ${language} code for quality, performance, security, and best practices:\n\n\`\`\`${language}\n${code}\n\`\`\`\n\nProvide specific, actionable feedback.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -121,7 +127,7 @@ export const aiController = {
       };
 
       const prompt = `Write comprehensive ${framework} unit tests for this ${language} code:\n\n\`\`\`${language}\n${code}\n\`\`\`\n\nInclude: happy path, edge cases, error scenarios, and mock usage.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -136,7 +142,7 @@ export const aiController = {
       };
 
       const prompt = `Generate comprehensive documentation for this ${language} code:\n\n\`\`\`${language}\n${code}\n\`\`\`\n\nInclude JSDoc/docstrings, parameter types, return values, examples.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }
@@ -151,7 +157,7 @@ export const aiController = {
         context: AIContext;
       };
 
-      const completion = await getInlineCompletion(prefix, suffix, language, context);
+      const completion = await getInlineCompletion(prefix, suffix, language, context, getAIOptions(req.body));
       res.json({ completion });
     } catch (error) {
       next(error);
@@ -168,7 +174,7 @@ export const aiController = {
       };
 
       const prompt = `Convert this ${fromLang} code to ${toLang}:\n\n\`\`\`${fromLang}\n${code}\n\`\`\`\n\nProvide idiomatic ${toLang} code with explanations.`;
-      await streamChatResponse(prompt, context, res);
+      await streamChatResponse(prompt, context, res, getAIOptions(req.body));
     } catch (error) {
       next(error);
     }

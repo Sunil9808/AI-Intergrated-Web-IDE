@@ -5,6 +5,11 @@ const BASE_URL = '/api/ai';
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let abortController: AbortController | null = null;
 
+function getSavedGeminiApiKey(): string | undefined {
+  const key = localStorage.getItem('ai-web-ide.geminiApiKey')?.trim();
+  return key || undefined;
+}
+
 export async function fetchInlineCompletion(
   prefix: string,
   suffix: string,
@@ -23,7 +28,7 @@ export async function fetchInlineCompletion(
         const response = await fetch(`${BASE_URL}/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prefix, suffix, language, context }),
+          body: JSON.stringify({ prefix, suffix, language, context, geminiApiKey: getSavedGeminiApiKey() }),
           signal: abortController.signal,
         });
 

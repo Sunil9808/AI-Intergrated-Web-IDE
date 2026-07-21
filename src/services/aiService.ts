@@ -3,6 +3,24 @@ import { useAIStore } from '../store/aiStore';
 
 const BASE_URL = '/api/ai';
 
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  const body = await response.text().catch(() => '');
+  if (!body.trim()) return fallback;
+
+  try {
+    const parsed = JSON.parse(body) as { error?: string; message?: string };
+    return parsed.error || parsed.message || fallback;
+  } catch {
+    const plainText = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return plainText || fallback;
+  }
+}
+
+function getSavedGeminiApiKey(): string | undefined {
+  const key = localStorage.getItem('ai-web-ide.geminiApiKey')?.trim();
+  return key || undefined;
+}
+
 export const aiService = {
   async sendMessage(
     prompt: string,
@@ -18,12 +36,11 @@ export const aiService = {
       const response = await fetch(`${BASE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, context }),
+        body: JSON.stringify({ prompt, context, geminiApiKey: getSavedGeminiApiKey() }),
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'AI request failed');
+        throw new Error(await readErrorMessage(response, `Server error: ${response.status} ${response.statusText}`));
       }
 
       const reader = response.body?.getReader();

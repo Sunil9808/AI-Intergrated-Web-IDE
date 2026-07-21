@@ -4,6 +4,24 @@ import { useEditorStore } from '../store/editorStore';
 import { ChatMessage } from '../types/ai.types';
 import { v4 as uuidv4 } from '../utils/uuid';
 
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  const body = await response.text().catch(() => '');
+  if (!body.trim()) return fallback;
+
+  try {
+    const parsed = JSON.parse(body) as { error?: string; message?: string };
+    return parsed.error || parsed.message || fallback;
+  } catch {
+    const plainText = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return plainText || fallback;
+  }
+}
+
+function getSavedGeminiApiKey(): string | undefined {
+  const key = localStorage.getItem('ai-web-ide.geminiApiKey')?.trim();
+  return key || undefined;
+}
+
 export function useAIChat() {
   const {
     messages, isStreaming, isLoading, error,
@@ -55,12 +73,11 @@ export function useAIChat() {
       const response = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, context: ctx }),
+        body: JSON.stringify({ prompt, context: ctx, geminiApiKey: getSavedGeminiApiKey() }),
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'AI request failed');
+        throw new Error(await readErrorMessage(response, `AI backend returned HTTP ${response.status}`));
       }
 
       const reader = response.body?.getReader();

@@ -93,7 +93,7 @@ export async function createFile(filePath: string, content = ''): Promise<FileNo
     lastModified: stats.mtimeMs,
   };
 }
-
+ 
 export async function createDirectory(dirPath: string): Promise<FileNode> {
   await fs.mkdir(dirPath, { recursive: true });
   return {

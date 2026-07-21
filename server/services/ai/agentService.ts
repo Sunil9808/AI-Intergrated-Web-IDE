@@ -2,7 +2,7 @@ import { exec, spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
-import { getChatCompletion, AIContext } from './aiService';
+import { getChatCompletion, AIContext, AIRequestOptions } from './aiService';
 
 const execAsync = promisify(exec);
 const workspaceRoot = path.basename(process.cwd()).toLowerCase() === 'server'
@@ -322,9 +322,9 @@ Use relative paths only. Do not include destructive commands. If a file must be 
 
 // ── Main agent runner ─────────────────────────────────────────────────────────
 
-export async function runPairProgrammerAgent(task: string, context: AIContext): Promise<AgentResult> {
+export async function runPairProgrammerAgent(task: string, context: AIContext, options?: AIRequestOptions): Promise<AgentResult> {
   const prompt = await buildAgentPrompt(task, context);
-  const aiText = await getChatCompletion(prompt, context, 8000);
+  const aiText = await getChatCompletion(prompt, context, 8000, options);
   const parsed = extractJson(aiText);
   const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
   const result: AgentResult = {

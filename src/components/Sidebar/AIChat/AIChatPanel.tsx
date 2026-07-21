@@ -98,6 +98,24 @@ interface AIChatPanelProps {
   onClose?: () => void;
 }
 
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  const body = await response.text().catch(() => '');
+  if (!body.trim()) return fallback;
+
+  try {
+    const parsed = JSON.parse(body) as { error?: string; message?: string };
+    return parsed.error || parsed.message || fallback;
+  } catch {
+    const plainText = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return plainText || fallback;
+  }
+}
+
+function getSavedGeminiApiKey(): string | undefined {
+  const key = localStorage.getItem('ai-web-ide.geminiApiKey')?.trim();
+  return key || undefined;
+}
+
 export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatPanelProps) {
   const [input, setInput] = useState('');
   const [agentTask, setAgentTask] = useState('');
@@ -222,12 +240,11 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       const response = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, context: aiContext }),
+        body: JSON.stringify({ prompt, context: aiContext, geminiApiKey: getSavedGeminiApiKey() }),
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || `HTTP ${response.status}`);
+        throw new Error(await readErrorMessage(response, `AI backend returned HTTP ${response.status}`));
       }
 
       const reader = response.body?.getReader();
@@ -247,9 +264,14 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6).trim();
-            if (data === '[DONE]') { break; }
+            if (data === '[DONE]') { continue; }
             try {
               const parsed = JSON.parse(data);
+              // Handle error from server
+              if (parsed.error) {
+                appendToLastMessage(`\n\n⚠️ **Error:** ${parsed.error}`);
+                continue;
+              }
               // OpenAI SSE format
               const text = parsed.choices?.[0]?.delta?.content
                 || parsed.content  // Anthropic format
@@ -435,6 +457,9 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command }),
       });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response, `Command runner returned HTTP ${response.status}`));
+      }
       const result = await response.json();
       addArtifact(
         result.exitCode === 0 ? 'Command passed' : 'Command failed',
@@ -490,6 +515,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           task,
+          geminiApiKey: getSavedGeminiApiKey(),
           context: {
             currentFile: activeTab ? {
               path: activeTab.filePath,
@@ -503,8 +529,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || `HTTP ${response.status}`);
+        throw new Error(await readErrorMessage(response, `AI agent returned HTTP ${response.status}`));
       }
 
       const result = await response.json() as AgentRunResult;
@@ -652,7 +677,7 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
             </button>
           </div>
           <div className="mt-1.5 text-[10px]" style={{ color: '#60a0c0' }}>
-            Key is stored locally. Current provider: Gemini 1.5 Flash
+            Key is stored locally in your browser. Restart the server after changing .env.
           </div>
         </div>
       )}
@@ -685,203 +710,201 @@ export default function AIChatPanel({ title = 'AI Assistant', onClose }: AIChatP
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {hasAIContent && (
-          <>
-      {/* Agent Workspace */}
-      <div className="space-y-3 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-        <div className="rounded-lg p-3" style={{ background: 'rgba(34,166,242,0.075)', border: '1px solid rgba(34,166,242,0.22)' }}>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <ClipboardList size={15} style={{ color: '#7dd3fc' }} />
-              <span className="text-[12px] font-semibold" style={{ color: '#eaf7ff' }}>Autonomous task</span>
+        {/* Agent Workspace — always visible */}
+        <div className="space-y-3 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="rounded-lg p-3" style={{ background: 'rgba(34,166,242,0.075)', border: '1px solid rgba(34,166,242,0.22)' }}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ClipboardList size={15} style={{ color: '#7dd3fc' }} />
+                <span className="text-[12px] font-semibold" style={{ color: '#eaf7ff' }}>Autonomous task</span>
+              </div>
+              <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'rgba(71,214,182,0.14)', color: '#8df0d9' }}>
+                agent mode
+              </span>
             </div>
-            <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'rgba(71,214,182,0.14)', color: '#8df0d9' }}>
-              agent mode
-            </span>
+            <textarea
+              value={agentTask}
+              onChange={(event) => setAgentTask(event.target.value)}
+              placeholder="Describe a larger task, e.g. Build login validation, run tests, and verify in browser..."
+              className="mb-2 h-16 w-full resize-none rounded-md px-3 py-2 text-xs"
+              style={{ background: '#10161b', color: 'var(--color-text)', border: '1px solid rgba(255,255,255,0.1)' }}
+              disabled={isStreaming}
+            />
+            <button
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-md text-[12px] font-semibold transition-all hover:brightness-110"
+              style={{
+                background: isStreaming ? '#385260' : 'linear-gradient(135deg, #22a6f2, #47d6b6)',
+                color: '#071018',
+                opacity: !agentTask.trim() || isStreaming ? 0.55 : 1,
+              }}
+              disabled={!agentTask.trim() || isStreaming}
+              onClick={startAgentTask}
+            >
+              {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              Start agent task
+            </button>
           </div>
-          <textarea
-            value={agentTask}
-            onChange={(event) => setAgentTask(event.target.value)}
-            placeholder="Describe a larger task, e.g. Build login validation, run tests, and verify in browser..."
-            className="mb-2 h-16 w-full resize-none rounded-md px-3 py-2 text-xs"
-            style={{ background: '#10161b', color: 'var(--color-text)', border: '1px solid rgba(255,255,255,0.1)' }}
-            disabled={isStreaming}
-          />
-          <button
-            className="flex h-9 w-full items-center justify-center gap-2 rounded-md text-[12px] font-semibold transition-all hover:brightness-110"
-            style={{
-              background: isStreaming ? '#385260' : 'linear-gradient(135deg, #22a6f2, #47d6b6)',
-              color: '#071018',
-              opacity: !agentTask.trim() || isStreaming ? 0.55 : 1,
-            }}
-            disabled={!agentTask.trim() || isStreaming}
-            onClick={startAgentTask}
-          >
-            {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            Start agent task
-          </button>
+
+          <div className="grid grid-cols-2 gap-2">
+            {AGENT_ACTIONS.map(({ id, label, icon: Icon, command }) => (
+              <button
+                key={id}
+                className="flex h-9 items-center justify-center gap-2 rounded-md text-[11px] transition-colors hover:bg-white/10"
+                style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', color: 'var(--color-text)' }}
+                onClick={() => command ? runAgentCommand(command) : openBrowserCheck()}
+              >
+                <Icon size={13} />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {agentSteps.length > 0 && (
+            <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+              {/* Progress bar */}
+              <div style={{ height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, marginBottom: 10, overflow: 'hidden' }}>
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${agentProgress}%`,
+                    background: 'linear-gradient(90deg, #22a6f2, #47d6b6)',
+                    borderRadius: 2,
+                    transition: 'width 0.6s ease',
+                  }}
+                />
+              </div>
+              {/* Elapsed time */}
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--color-text)' }}>
+                  <Files size={14} style={{ color: '#7dd3fc' }} />
+                  Execution plan
+                </div>
+                {isStreaming && (
+                  <div className="flex items-center gap-1 text-[10px]" style={{ color: '#7dd3fc' }}>
+                    <Clock size={11} />
+                    <span>{agentElapsed}s</span>
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
+                {agentSteps.map((step) => {
+                  const StepIcon = step.icon;
+                  return (
+                    <div key={step.id}>
+                      <div
+                        className="flex items-start gap-2 text-[11px]"
+                        style={{ color: step.status === 'pending' ? 'var(--color-textMuted)' : 'var(--color-text)' }}
+                      >
+                        {step.status === 'done' ? (
+                          <CheckCircle2 size={13} style={{ color: '#47d6b6', marginTop: 1, flexShrink: 0 }} />
+                        ) : step.status === 'active' ? (
+                          <Loader2 size={13} className="animate-spin" style={{ color: step.color, marginTop: 1, flexShrink: 0 }} />
+                        ) : step.status === 'error' ? (
+                          <Bug size={13} style={{ color: '#f87171', marginTop: 1, flexShrink: 0 }} />
+                        ) : (
+                          <StepIcon size={13} style={{ color: '#4b5563', marginTop: 1, flexShrink: 0 }} />
+                        )}
+                        <span
+                          className="leading-4"
+                          style={{
+                            color: step.status === 'active'
+                              ? step.color
+                              : step.status === 'done'
+                              ? 'var(--color-text)'
+                              : step.status === 'error'
+                              ? '#f87171'
+                              : 'var(--color-textMuted)',
+                            fontWeight: step.status === 'active' ? 600 : 400,
+                            transition: 'color 0.3s',
+                          }}
+                        >
+                          {step.label}
+                        </span>
+                        {step.status === 'done' && step.durationMs && (
+                          <span className="ml-auto text-[9px]" style={{ color: '#4b5563', flexShrink: 0 }}>
+                            {(step.durationMs / 1000).toFixed(1)}s
+                          </span>
+                        )}
+                      </div>
+                      {/* Live log lines */}
+                      {step.logs.length > 0 && (
+                        <div className="mt-1 ml-5 space-y-0.5">
+                          {step.logs.map((log, li) => (
+                            <div
+                              key={li}
+                              className="text-[10px] leading-4"
+                              style={{
+                                color: log.text.endsWith('✓') ? '#47d6b6' : '#6b7280',
+                                animation: 'slideInLog 0.25s ease',
+                                fontFamily: 'JetBrains Mono, monospace',
+                              }}
+                            >
+                              › {log.text}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {agentArtifacts.length > 0 && (
+            <div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-normal" style={{ color: 'var(--color-textMuted)' }}>Artifacts</div>
+              <div className="space-y-2">
+                {agentArtifacts.slice(0, 4).map(({ id, title, detail, icon: Icon }) => (
+                  <div key={id} className="agent-artifact-card rounded-md p-2" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--color-text)' }}>
+                      <Icon size={13} style={{ color: '#7dd3fc' }} />
+                      {title}
+                    </div>
+                    <div className="line-clamp-3 whitespace-pre-wrap text-[11px] leading-4" style={{ color: 'var(--color-textMuted)' }}>
+                      {detail}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          {AGENT_ACTIONS.map(({ id, label, icon: Icon, command }) => (
+        {/* Quick Actions — always visible */}
+        <div className="grid grid-cols-3 gap-2 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          {AI_QUICK_ACTIONS.map(({ id, label, icon: Icon, color }) => (
             <button
               key={id}
-              className="flex h-9 items-center justify-center gap-2 rounded-md text-[11px] transition-colors hover:bg-white/10"
-              style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)', color: 'var(--color-text)' }}
-              onClick={() => command ? runAgentCommand(command) : openBrowserCheck()}
+              onClick={() => setSelectedAction(selectedAction === id ? null : id)}
+              className="flex h-16 flex-col items-center justify-center gap-1 rounded-md text-[11px] transition-all hover:-translate-y-0.5"
+              style={{
+                background: selectedAction === id ? color + '24' : 'rgba(255,255,255,0.045)',
+                color: selectedAction === id ? color : 'var(--color-text)',
+                border: `1px solid ${selectedAction === id ? color + '80' : 'rgba(255,255,255,0.08)'}`,
+              }}
             >
-              <Icon size={13} />
+              <Icon size={16} />
               {label}
             </button>
           ))}
         </div>
 
-        {agentSteps.length > 0 && (
-          <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-            {/* Progress bar */}
-            <div style={{ height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, marginBottom: 10, overflow: 'hidden' }}>
-              <div
-                style={{
-                  height: '100%',
-                  width: `${agentProgress}%`,
-                  background: 'linear-gradient(90deg, #22a6f2, #47d6b6)',
-                  borderRadius: 2,
-                  transition: 'width 0.6s ease',
-                }}
-              />
-            </div>
-            {/* Elapsed time */}
-            <div className="mb-2 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--color-text)' }}>
-                <Files size={14} style={{ color: '#7dd3fc' }} />
-                Execution plan
+        {/* Messages + errors */}
+        {hasAIContent && (
+          <div className="space-y-3 p-2">
+            {messages.map((msg) => (
+              <MessageBubble key={msg.id} message={msg} onCopy={copyMessage} />
+            ))}
+
+            {error && (
+              <div className="rounded p-3 text-xs" style={{ background: '#2d1515', border: '1px solid #5c1a1a', color: '#f87171' }}>
+                ⚠️ {error}
               </div>
-              {isStreaming && (
-                <div className="flex items-center gap-1 text-[10px]" style={{ color: '#7dd3fc' }}>
-                  <Clock size={11} />
-                  <span>{agentElapsed}s</span>
-                </div>
-              )}
-            </div>
-            <div className="space-y-2">
-              {agentSteps.map((step) => {
-                const StepIcon = step.icon;
-                return (
-                  <div key={step.id}>
-                    <div
-                      className="flex items-start gap-2 text-[11px]"
-                      style={{ color: step.status === 'pending' ? 'var(--color-textMuted)' : 'var(--color-text)' }}
-                    >
-                      {step.status === 'done' ? (
-                        <CheckCircle2 size={13} style={{ color: '#47d6b6', marginTop: 1, flexShrink: 0 }} />
-                      ) : step.status === 'active' ? (
-                        <Loader2 size={13} className="animate-spin" style={{ color: step.color, marginTop: 1, flexShrink: 0 }} />
-                      ) : step.status === 'error' ? (
-                        <Bug size={13} style={{ color: '#f87171', marginTop: 1, flexShrink: 0 }} />
-                      ) : (
-                        <StepIcon size={13} style={{ color: '#4b5563', marginTop: 1, flexShrink: 0 }} />
-                      )}
-                      <span
-                        className="leading-4"
-                        style={{
-                          color: step.status === 'active'
-                            ? step.color
-                            : step.status === 'done'
-                            ? 'var(--color-text)'
-                            : step.status === 'error'
-                            ? '#f87171'
-                            : 'var(--color-textMuted)',
-                          fontWeight: step.status === 'active' ? 600 : 400,
-                          transition: 'color 0.3s',
-                        }}
-                      >
-                        {step.label}
-                      </span>
-                      {step.status === 'done' && step.durationMs && (
-                        <span className="ml-auto text-[9px]" style={{ color: '#4b5563', flexShrink: 0 }}>
-                          {(step.durationMs / 1000).toFixed(1)}s
-                        </span>
-                      )}
-                    </div>
-                    {/* Live log lines */}
-                    {step.logs.length > 0 && (
-                      <div className="mt-1 ml-5 space-y-0.5">
-                        {step.logs.map((log, li) => (
-                          <div
-                            key={li}
-                            className="text-[10px] leading-4"
-                            style={{
-                              color: log.text.endsWith('✓') ? '#47d6b6' : '#6b7280',
-                              animation: 'slideInLog 0.25s ease',
-                              fontFamily: 'JetBrains Mono, monospace',
-                            }}
-                          >
-                            › {log.text}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
-        )}
-
-        {agentArtifacts.length > 0 && (
-          <div>
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-normal" style={{ color: 'var(--color-textMuted)' }}>Artifacts</div>
-            <div className="space-y-2">
-              {agentArtifacts.slice(0, 4).map(({ id, title, detail, icon: Icon }) => (
-                <div key={id} className="agent-artifact-card rounded-md p-2" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                  <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--color-text)' }}>
-                    <Icon size={13} style={{ color: '#7dd3fc' }} />
-                    {title}
-                  </div>
-                  <div className="line-clamp-3 whitespace-pre-wrap text-[11px] leading-4" style={{ color: 'var(--color-textMuted)' }}>
-                    {detail}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-3 gap-2 p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-        {AI_QUICK_ACTIONS.map(({ id, label, icon: Icon, color }) => (
-          <button
-            key={id}
-            onClick={() => setSelectedAction(selectedAction === id ? null : id)}
-            className="flex h-16 flex-col items-center justify-center gap-1 rounded-md text-[11px] transition-all hover:-translate-y-0.5"
-            style={{
-              background: selectedAction === id ? color + '24' : 'rgba(255,255,255,0.045)',
-              color: selectedAction === id ? color : 'var(--color-text)',
-              border: `1px solid ${selectedAction === id ? color + '80' : 'rgba(255,255,255,0.08)'}`,
-            }}
-          >
-            <Icon size={16} />
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Messages */}
-      <div className="space-y-3 p-2">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} onCopy={copyMessage} />
-        ))}
-
-        {error && (
-          <div className="rounded p-3 text-xs" style={{ background: '#2d1515', border: '1px solid #5c1a1a', color: '#f87171' }}>
-            ⚠️ {error}
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-          </>
         )}
       </div>
 
